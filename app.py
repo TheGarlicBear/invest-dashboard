@@ -21,6 +21,8 @@ from src.indicators import add_indicators
 from src.krx_lookup import build_name_map, load_krx_tickers, search_krx_tickers, update_krx_tickers_from_pykrx
 from src.watchlist_store import list_watchlist_users, load_watchlist, reset_watchlist, save_watchlist
 
+APP_VERSION = "v11-profile-fix"
+
 st.set_page_config(page_title="개인 투자 판단 보조기", layout="wide")
 
 CUSTOM_CSS = """
@@ -129,6 +131,8 @@ def market_summary_rows(data_map: Dict[str, pd.DataFrame], display_names: Dict[s
             '보유': '보유중' if hold else '미보유',
             '평균단가 대비(%)': _safe_round(avg_gap, 2),
             '프로필': evaluation.profile_label,
+            '프로파일키': evaluation.profile_key,
+            '프로파일유형': evaluation.profile_type,
             '현재가': _safe_round(current_price, 2),
             'RSI14': _safe_round(latest['RSI14'], 2),
             '20일선 대비(%)': _safe_round(latest['MA20DiffPct'], 2),
@@ -145,7 +149,7 @@ def market_summary_rows(data_map: Dict[str, pd.DataFrame], display_names: Dict[s
     result = pd.DataFrame(rows)
     if result.empty:
         return result
-    ordered = ['종목','Ticker','보유','평균단가 대비(%)'] + SUMMARY_COLUMNS[2:]
+    ordered = ['종목','Ticker','보유','평균단가 대비(%)','프로파일키','프로파일유형'] + SUMMARY_COLUMNS[2:]
     return result[ordered].sort_values(by=['보유','점수'], ascending=[False,False]).reset_index(drop=True)
 
 
@@ -216,6 +220,7 @@ def render_profile_card(ticker: str, display_name: str) -> None:
         f"""
         <div class='card'>
             <div class='section-title'>{display_name} <span class='badge'>{profile['label']}</span></div>
+            <div style='font-size:0.88rem;color:#93c5fd;margin-bottom:0.20rem'>프로파일 키: {get_profile_for_ticker(ticker)[0]}</div>
             <div style='font-size:0.88rem;color:#93c5fd;margin-bottom:0.55rem'>프로파일 유형: {profile_type}</div>
             <div style='font-size:0.95rem;color:#cbd5e1'>{logic}</div>
             <div style='font-size:0.9rem;color:#e2e8f0;margin-top:0.8rem'><strong>추매 기준 요약</strong><ul style='margin-top:0.35rem'>{rules_html}</ul></div>
