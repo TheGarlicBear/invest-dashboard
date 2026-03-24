@@ -21,7 +21,7 @@ from src.indicators import add_indicators
 from src.krx_lookup import build_name_map, load_krx_tickers, search_krx_tickers, update_krx_tickers_from_pykrx
 from src.watchlist_store import list_watchlist_users, load_watchlist, reset_watchlist, save_watchlist
 
-APP_VERSION = "v11-profile-fix"
+APP_VERSION = "v12-holdings-colors"
 
 st.set_page_config(page_title="개인 투자 판단 보조기", layout="wide")
 
@@ -202,6 +202,76 @@ def style_signal_table(df: pd.DataFrame):
         bg = label_to_color(row['판정'])
         return [f'background-color: {bg}; color: white; font-weight: 700' if col == '판정' else '' for col in df.columns]
     return df.style.apply(color_label, axis=1).format({'총점':'{:.2f}'}, na_rep='-')
+
+
+def style_holdings(df: pd.DataFrame):
+    def row_styles(row):
+        styles = []
+        for col in df.columns:
+            style = ""
+            if col == '보유':
+                style = 'background-color: #1d4ed8; color: white; font-weight: 700'
+            elif col in ['손익률(%)', '평균단가 대비(%)']:
+                val = row[col]
+                if pd.notna(val):
+                    if val >= 3:
+                        style = 'background-color: #fee2e2; color: #991b1b; font-weight: 700'
+                    elif val > 0:
+                        style = 'background-color: #fef2f2; color: #b91c1c; font-weight: 700'
+                    elif val <= -5:
+                        style = 'background-color: #dbeafe; color: #1d4ed8; font-weight: 700'
+                    elif val < 0:
+                        style = 'background-color: #eff6ff; color: #1d4ed8; font-weight: 700'
+                    else:
+                        style = 'background-color: #f8fafc; color: #475569'
+            elif col == '평가손익':
+                val = row[col]
+                if pd.notna(val):
+                    if val > 0:
+                        style = 'background-color: #fef2f2; color: #b91c1c; font-weight: 700'
+                    elif val < 0:
+                        style = 'background-color: #eff6ff; color: #1d4ed8; font-weight: 700'
+            elif col == '추매판정':
+                label = str(row[col])
+                color_map = {
+                    '2차 추매 후보': '#15803d',
+                    '1차 추매 후보': '#16a34a',
+                    '관망': '#64748b',
+                    '추격 금지': '#dc2626',
+                }
+                bg = color_map.get(label, '#64748b')
+                style = f'background-color: {bg}; color: white; font-weight: 700'
+            elif col == '프로필':
+                label = str(row[col])
+                if '개별' in label:
+                    style = 'background-color: #e0e7ff; color: #3730a3; font-weight: 700'
+                elif '계열' in label:
+                    style = 'background-color: #ede9fe; color: #6d28d9; font-weight: 700'
+                else:
+                    style = 'background-color: #f1f5f9; color: #334155; font-weight: 700'
+            elif col == '추매점수':
+                val = row[col]
+                if pd.notna(val):
+                    if val >= 4:
+                        style = 'background-color: #dcfce7; color: #166534; font-weight: 700'
+                    elif val >= 2:
+                        style = 'background-color: #ecfccb; color: #3f6212; font-weight: 700'
+                    elif val < 0:
+                        style = 'background-color: #fee2e2; color: #991b1b; font-weight: 700'
+            styles.append(style)
+        return styles
+
+    fmt = {
+        '평균단가': '{:.2f}',
+        '현재가': '{:.2f}',
+        '수량': '{:.0f}',
+        '손익률(%)': '{:.2f}',
+        '평균단가 대비(%)': '{:.2f}',
+        '평가손익': '{:.2f}',
+        '시장점수': '{:.2f}',
+        '추매점수': '{:.0f}',
+    }
+    return df.style.apply(row_styles, axis=1).format(fmt, na_rep='-')
 
 
 def render_top_metrics(summary_df: pd.DataFrame, data_count: int, holdings_count: int) -> None:
@@ -404,7 +474,7 @@ def main() -> None:
             st.info('현재 사용자 보유 종목 파일이 없습니다.')
         else:
             st.caption('보유 종목은 data/holdings/<사용자>.csv 에서 로드된다. 평균단가 대비 괴리와 추매점수를 함께 본다.')
-            st.dataframe(holdings_view_df.style.format({'평균단가':'{:.2f}','현재가':'{:.2f}','수량':'{:.0f}','손익률(%)':'{:.2f}','평균단가 대비(%)':'{:.2f}','평가손익':'{:.2f}','시장점수':'{:.2f}','추매점수':'{:.0f}'}, na_rep='-'), width='stretch', hide_index=True)
+            st.dataframe(style_holdings(holdings_view_df), width='stretch', hide_index=True)
             if not holdings_view_df.empty:
                 st.markdown('#### 추매 후보 보기')
                 candidate_df = holdings_view_df[holdings_view_df['추매점수'] >= 2].copy()
