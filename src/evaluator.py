@@ -5,19 +5,21 @@ from typing import Any
 
 import pandas as pd
 
-from src.config import PROFILE_RULES
+from src.profile_store import get_profile_for_ticker_from_files
 
 
 @dataclass
 class EvaluationResult:
     label: str
-    score: int
+    score: float
     comment: str
     breakdown: list[dict[str, Any]]
     profile_key: str
     profile_label: str
     profile_description: str
     total_raw_score: int
+    buy_add_rules: list[str]
+    profile_type: str
 
 
 def _add_detail(
@@ -27,13 +29,13 @@ def _add_detail(
     weight: float,
     value: str,
     note: str,
-) -> int:
-    weighted_score = int(round(raw_score * weight))
+) -> float:
+    weighted_score = round(float(raw_score) * float(weight), 2)
     breakdown.append(
         {
             "항목": metric,
             "원점수": raw_score,
-            "가중치": weight,
+            "가중치": round(float(weight), 2),
             "점수": weighted_score,
             "값": value,
             "설명": note,
@@ -43,17 +45,11 @@ def _add_detail(
 
 
 def get_profile_for_ticker(ticker: str) -> tuple[str, dict[str, Any]]:
-    ticker_upper = ticker.upper()
-    for key, rule in PROFILE_RULES.items():
-        if key == "default":
-            continue
-        if ticker_upper in [item.upper() for item in rule["keywords"]]:
-            return key, rule
-    return "default", PROFILE_RULES["default"]
+    return get_profile_for_ticker_from_files(ticker)
 
 
 def evaluate_latest(latest: dict[str, Any], ticker: str) -> EvaluationResult:
-    score = 0
+    score = 0.0
     total_raw_score = 0
     breakdown: list[dict[str, Any]] = []
 
@@ -190,11 +186,13 @@ def evaluate_latest(latest: dict[str, Any], ticker: str) -> EvaluationResult:
 
     return EvaluationResult(
         label=label,
-        score=score,
+        score=round(score, 2),
         comment=comment,
         breakdown=breakdown,
         profile_key=profile_key,
         profile_label=profile["label"],
-        profile_description=profile["description"],
+        profile_description=profile["logic_summary"],
         total_raw_score=total_raw_score,
+        buy_add_rules=profile.get("buy_add_rules", []),
+        profile_type=profile.get("type", "기본"),
     )

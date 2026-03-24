@@ -208,7 +208,21 @@ def render_top_metrics(summary_df: pd.DataFrame, data_count: int, holdings_count
 
 def render_profile_card(ticker: str, display_name: str) -> None:
     _, profile = get_profile_for_ticker(ticker)
-    st.markdown(f"<div class='card'><div class='section-title'>{display_name} <span class='badge'>{profile['label']}</span></div><div style='font-size:0.95rem;color:#cbd5e1'>{profile['description']}</div></div>", unsafe_allow_html=True)
+    profile_type = profile.get('type', '기본')
+    logic = profile.get('logic_summary', profile.get('description', ''))
+    rules = profile.get('buy_add_rules', [])
+    rules_html = ''.join([f"<li>{rule}</li>" for rule in rules[:4]])
+    st.markdown(
+        f"""
+        <div class='card'>
+            <div class='section-title'>{display_name} <span class='badge'>{profile['label']}</span></div>
+            <div style='font-size:0.88rem;color:#93c5fd;margin-bottom:0.55rem'>프로파일 유형: {profile_type}</div>
+            <div style='font-size:0.95rem;color:#cbd5e1'>{logic}</div>
+            <div style='font-size:0.9rem;color:#e2e8f0;margin-top:0.8rem'><strong>추매 기준 요약</strong><ul style='margin-top:0.35rem'>{rules_html}</ul></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def holdings_view(holdings_df: pd.DataFrame, data_map: Dict[str, pd.DataFrame], display_names: Dict[str, str]) -> pd.DataFrame:

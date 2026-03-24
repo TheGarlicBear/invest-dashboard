@@ -1,0 +1,338 @@
+{
+  "GOOGL": {
+    "label": "알파벳 개별",
+    "type": "개별",
+    "logic_summary": "대형 성장주. 추세 훼손 여부와 조정 후 재상승 신호를 중시.",
+    "weights": {
+      "drawdown": 0.12,
+      "rsi": 0.08,
+      "ma20": 0.2,
+      "ma60": 0.22,
+      "macd": 0.2,
+      "volume": 0.1,
+      "atr": 0.03,
+      "position_gap": 0.05
+    },
+    "buy_add_rules": [
+      "20일선 아래이되 60일선 위에서 조정 시 가점",
+      "MACD 히스토그램 반전 시 가점",
+      "평균단가 대비 -5%~-10% 구간 추매 후보",
+      "거래량 동반 20일선 재돌파 시 적극 가점"
+    ]
+  },
+  "SOXL": {
+    "label": "SOXL 개별",
+    "type": "개별",
+    "logic_summary": "반도체 레버리지. 낙폭과 RSI, 단기 모멘텀을 강하게 반영.",
+    "weights": {
+      "drawdown": 0.3,
+      "rsi": 0.24,
+      "ma20": 0.14,
+      "ma60": 0.05,
+      "macd": 0.15,
+      "volume": 0.05,
+      "atr": 0.02,
+      "position_gap": 0.05
+    },
+    "buy_add_rules": [
+      "최근 고점 대비 -12%~-20% 구간 강한 가점",
+      "RSI 35 이하 우선 관찰, 30 전후면 1차 추매 후보",
+      "ATR 패널티는 낮게 반영",
+      "하락 추세 중인 경우 MACD 반전 전까지 과도한 추매 금지"
+    ]
+  },
+  "TQQQ": {
+    "label": "TQQQ 개별",
+    "type": "개별",
+    "logic_summary": "나스닥 레버리지. SOXL과 유사하되 추세 확인 비중을 약간 높임.",
+    "weights": {
+      "drawdown": 0.26,
+      "rsi": 0.2,
+      "ma20": 0.16,
+      "ma60": 0.08,
+      "macd": 0.16,
+      "volume": 0.06,
+      "atr": 0.03,
+      "position_gap": 0.05
+    },
+    "buy_add_rules": [
+      "낙폭과 RSI를 우선 보되 20/60일선 구조도 체크",
+      "MACD 반전이 추매 신뢰도에 중요",
+      "평균단가 대비 -7%~-12% 구간 우선 검토"
+    ]
+  },
+  "SAMSUNG_ELECTRONICS": {
+    "label": "삼성전자 개별",
+    "type": "개별",
+    "logic_summary": "국내 핵심 반도체/대형주. 낙폭, 거래량, 20일선 복귀를 중시.",
+    "weights": {
+      "drawdown": 0.24,
+      "rsi": 0.1,
+      "ma20": 0.18,
+      "ma60": 0.12,
+      "macd": 0.12,
+      "volume": 0.18,
+      "atr": 0.02,
+      "position_gap": 0.04
+    },
+    "buy_add_rules": [
+      "고점 대비 -10%~-15% 구간 가점",
+      "거래량 증가를 동반한 20일선 회복 시 큰 가점",
+      "60일선 아래에서 하락 지속 중이면 보수적 접근",
+      "평균단가 아래로 내려오면 추매 점수 추가 가점"
+    ]
+  },
+  "NAVER": {
+    "label": "NAVER 개별",
+    "type": "개별",
+    "logic_summary": "국내 플랫폼/성장주. 낙폭 단독보다 추세 회복 확인이 중요.",
+    "weights": {
+      "drawdown": 0.14,
+      "rsi": 0.08,
+      "ma20": 0.2,
+      "ma60": 0.18,
+      "macd": 0.18,
+      "volume": 0.14,
+      "atr": 0.03,
+      "position_gap": 0.05
+    },
+    "buy_add_rules": [
+      "낙폭만 크다고 즉시 추매하지 않음",
+      "MACD 반전 + 20일선 회복 + 거래량 증가 조합 선호",
+      "평균단가 아래라도 추세 훼손 시 추매 보류"
+    ]
+  },
+  "KB_FINANCIAL": {
+    "label": "KB금융 개별",
+    "type": "개별",
+    "logic_summary": "금융 대표주. 급등 추격보다 눌림 추매, 60일선 유지 여부를 중시.",
+    "weights": {
+      "drawdown": 0.14,
+      "rsi": 0.12,
+      "ma20": 0.1,
+      "ma60": 0.26,
+      "macd": 0.08,
+      "volume": 0.05,
+      "atr": 0.05,
+      "position_gap": 0.08
+    },
+    "buy_add_rules": [
+      "20일선 아래, 60일선 위 구간 가점",
+      "RSI 45 전후의 눌림 선호",
+      "급등 후 고점 부근에서는 감점",
+      "평균단가 대비 -5%~-10% 구간 분할 추매 후보"
+    ]
+  },
+  "SAMSUNG_FIRE_GROUP": {
+    "label": "삼성화재 계열",
+    "type": "세트",
+    "logic_summary": "보험/배당 계열. 보통주·우선주 괴리와 60일선 구조를 중시.",
+    "weights": {
+      "drawdown": 0.12,
+      "rsi": 0.1,
+      "ma20": 0.08,
+      "ma60": 0.28,
+      "macd": 0.06,
+      "volume": 0.04,
+      "atr": 0.06,
+      "position_gap": 0.1
+    },
+    "buy_add_rules": [
+      "우선주 괴리 확대 시 우선주 선호",
+      "60일선 위 눌림 시 가점",
+      "배당/방어 성격이라 ATR 패널티는 완화",
+      "고점 추격은 감점"
+    ]
+  },
+  "HYUNDAI_PREF_GROUP": {
+    "label": "현대차 우선주 계열",
+    "type": "세트",
+    "logic_summary": "우선주/배당/괴리율 계열. 보통주 대비 괴리와 중기 추세를 중시.",
+    "weights": {
+      "drawdown": 0.12,
+      "rsi": 0.1,
+      "ma20": 0.08,
+      "ma60": 0.24,
+      "macd": 0.06,
+      "volume": 0.04,
+      "atr": 0.05,
+      "position_gap": 0.12
+    },
+    "buy_add_rules": [
+      "보통주 대비 괴리 확대 시 가점",
+      "60일선 유지 하 눌림 추매 선호",
+      "급등 추격 금지",
+      "평균단가 아래 + 괴리 확대 시 추매 우선순위 상승"
+    ]
+  },
+  "HANA_FINANCIAL_GROUP": {
+    "label": "하나금융 일반",
+    "type": "그룹",
+    "logic_summary": "금융주 일반 프로파일.",
+    "weights": {
+      "drawdown": 0.14,
+      "rsi": 0.12,
+      "ma20": 0.1,
+      "ma60": 0.24,
+      "macd": 0.08,
+      "volume": 0.05,
+      "atr": 0.05,
+      "position_gap": 0.08
+    },
+    "buy_add_rules": [
+      "60일선 유지 눌림 선호",
+      "고점 추격 감점"
+    ]
+  },
+  "KT_DEFENSIVE": {
+    "label": "통신/방어주",
+    "type": "그룹",
+    "logic_summary": "방어/배당 성격. 추세 안정성과 과열 여부 중심.",
+    "weights": {
+      "drawdown": 0.1,
+      "rsi": 0.1,
+      "ma20": 0.1,
+      "ma60": 0.28,
+      "macd": 0.06,
+      "volume": 0.03,
+      "atr": 0.08,
+      "position_gap": 0.1
+    },
+    "buy_add_rules": [
+      "60일선 위 조정 선호",
+      "고점권 추격 금지"
+    ]
+  },
+  "LS_ELECTRIC_CYCLICAL": {
+    "label": "산업/전력기기 사이클",
+    "type": "그룹",
+    "logic_summary": "산업/전력기기 성격. 낙폭보다 거래량과 추세 복귀를 중시.",
+    "weights": {
+      "drawdown": 0.16,
+      "rsi": 0.08,
+      "ma20": 0.18,
+      "ma60": 0.14,
+      "macd": 0.14,
+      "volume": 0.18,
+      "atr": 0.04,
+      "position_gap": 0.08
+    },
+    "buy_add_rules": [
+      "거래량 동반 20일선 회복 시 가점",
+      "상승 추세 꺾이면 보수적 접근"
+    ]
+  },
+  "HD_KSOE_CYCLICAL": {
+    "label": "조선/중공업 사이클",
+    "type": "그룹",
+    "logic_summary": "조선주 특성상 추세와 거래량을 함께 체크.",
+    "weights": {
+      "drawdown": 0.16,
+      "rsi": 0.08,
+      "ma20": 0.16,
+      "ma60": 0.16,
+      "macd": 0.12,
+      "volume": 0.16,
+      "atr": 0.06,
+      "position_gap": 0.1
+    },
+    "buy_add_rules": [
+      "급등 후 추격 금지",
+      "눌림 후 거래량 회복 시 추매 검토"
+    ]
+  },
+  "SAMSUNG_BIO_GROWTH": {
+    "label": "바이오 대형성장",
+    "type": "그룹",
+    "logic_summary": "바이오는 변동성이 높아 추세 회복 확인이 중요.",
+    "weights": {
+      "drawdown": 0.12,
+      "rsi": 0.08,
+      "ma20": 0.18,
+      "ma60": 0.16,
+      "macd": 0.18,
+      "volume": 0.12,
+      "atr": 0.06,
+      "position_gap": 0.1
+    },
+    "buy_add_rules": [
+      "낙폭 단독 추매 금지",
+      "MACD/20일선 회복 중시"
+    ]
+  },
+  "SHIFTUP_GROWTH": {
+    "label": "국내 성장주",
+    "type": "그룹",
+    "logic_summary": "고변동 성장주. 추세 반전과 거래량 동반 여부를 중시.",
+    "weights": {
+      "drawdown": 0.16,
+      "rsi": 0.1,
+      "ma20": 0.18,
+      "ma60": 0.14,
+      "macd": 0.18,
+      "volume": 0.12,
+      "atr": 0.05,
+      "position_gap": 0.07
+    },
+    "buy_add_rules": [
+      "낙폭만 보고 진입 금지",
+      "20일선 회복 + 거래량 증가 시 가점"
+    ]
+  },
+  "HYOSUNG_HOLDCO": {
+    "label": "지주/산업재",
+    "type": "그룹",
+    "logic_summary": "지주/산업재 일반 프로파일.",
+    "weights": {
+      "drawdown": 0.16,
+      "rsi": 0.1,
+      "ma20": 0.12,
+      "ma60": 0.2,
+      "macd": 0.1,
+      "volume": 0.08,
+      "atr": 0.06,
+      "position_gap": 0.08
+    },
+    "buy_add_rules": [
+      "60일선 위 눌림 선호",
+      "과열권 추격 금지"
+    ]
+  },
+  "MEGA_CAP_GROWTH": {
+    "label": "미국 대형성장 일반",
+    "type": "그룹",
+    "logic_summary": "MSFT, INTC 등 미국 대형 성장주용 기본 프로파일.",
+    "weights": {
+      "drawdown": 0.12,
+      "rsi": 0.08,
+      "ma20": 0.18,
+      "ma60": 0.2,
+      "macd": 0.18,
+      "volume": 0.1,
+      "atr": 0.04,
+      "position_gap": 0.1
+    },
+    "buy_add_rules": [
+      "20일선/60일선 구조 중시",
+      "추세 복귀 전 과도한 추매 보류"
+    ]
+  },
+  "DEFAULT": {
+    "label": "기본형",
+    "type": "기본",
+    "logic_summary": "별도 정의가 없는 종목에 쓰는 기본 프로파일.",
+    "weights": {
+      "drawdown": 0.16,
+      "rsi": 0.12,
+      "ma20": 0.14,
+      "ma60": 0.14,
+      "macd": 0.14,
+      "volume": 0.1,
+      "atr": 0.08,
+      "position_gap": 0.12
+    },
+    "buy_add_rules": [
+      "고점 추격보다 눌림 선호"
+    ]
+  }
+}
