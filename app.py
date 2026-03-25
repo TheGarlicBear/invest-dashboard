@@ -22,7 +22,7 @@ from src.indicators import add_indicators
 from src.krx_lookup import build_name_map, load_krx_tickers, search_krx_tickers, update_krx_tickers_from_pykrx
 from src.watchlist_store import load_watchlist, reset_watchlist, save_watchlist
 
-APP_VERSION = "v14-structure-risk"
+APP_VERSION = "v14.2-structure-risk-holdings-only"
 
 st.set_page_config(page_title="개인 투자 판단 보조기", layout="wide")
 
@@ -194,7 +194,7 @@ def style_summary(df: pd.DataFrame):
     def color_label(row):
         bg = label_to_color(row['판정'])
         return [f'background-color: {bg}; color: white; font-weight: 700' if col == '판정' else (f"background-color: {'#16a34a' if str(row.get('구조훼손판정',''))=='유지' else '#f59e0b' if str(row.get('구조훼손판정',''))=='경고' else '#ea580c' if str(row.get('구조훼손판정',''))=='축소 후보' else '#b91c1c'}; color: white; font-weight: 700" if col == '구조훼손판정' else '') for col in df.columns]
-    fmt = {col: '{:.2f}' for col in ['평균단가 대비(%)','현재가','RSI14','20일선 대비(%)','60일선 대비(%)','고점 대비(%)','52주 위치(%)','MACD 히스토그램','ATR14(%)','거래량 배수','점수'] if col in df.columns}
+    fmt = {col: '{:.2f}' for col in ['평균단가 대비(%)','현재가','RSI14','20일선 대비(%)','60일선 대비(%)','고점 대비(%)','52주 위치(%)','MACD 히스토그램','ATR14(%)','거래량 배수','점수','구조훼손점수'] if col in df.columns}
     return df.style.apply(color_label, axis=1).format(fmt, na_rep='-')
 
 
@@ -441,7 +441,12 @@ def holdings_view(holdings_df: pd.DataFrame, data_map: Dict[str, pd.DataFrame], 
         })
     out = pd.DataFrame(rows)
     if out.empty: return out
-    return out.sort_values(by=['추매점수','시장점수'], ascending=[False,False]).reset_index(drop=True)
+    _risk_results = out.apply(lambda r: calc_structure_risk_score(r), axis=1, result_type='expand')
+    _risk_results.columns = ['구조훼손점수', '구조훼손판정', '구조훼손요약']
+    out = pd.concat([out, _risk_results], axis=1)
+    ordered = ['종목','Ticker','평균단가','현재가','수량','손익률(%)','평균단가 대비(%)','평가손익','시장점수','구조훼손점수','구조훼손판정','추매점수','추매판정','프로필']
+    ordered = [c for c in ordered if c in out.columns]
+    return out[ordered].sort_values(by=['구조훼손점수','추매점수','시장점수'], ascending=[False,False,False]).reset_index(drop=True)
 
 
 
