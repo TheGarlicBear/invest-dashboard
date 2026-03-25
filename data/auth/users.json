@@ -1,0 +1,10 @@
+{
+  "master": {
+    "password_hash": "4c69c4a4f583b65b40b1b838b011be548614e23c02bb940d07e2f96f2177d056",
+    "role": "admin"
+  },
+  "wife": {
+    "password_hash": "13e80775831ba5c5e3db21e5068dd8d21e92d232049b552bbf5f00421ef201d5",
+    "role": "user"
+  }
+}

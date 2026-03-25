@@ -14,14 +14,15 @@ from src.config import (
     PERIOD_OPTIONS,
     SUMMARY_COLUMNS,
 )
+from src.auth_store import verify_login, seed_default_users
 from src.data_loader import fetch_multiple
 from src.evaluator import evaluate_latest, get_profile_for_ticker
 from src.holdings_store import load_holdings
 from src.indicators import add_indicators
 from src.krx_lookup import build_name_map, load_krx_tickers, search_krx_tickers, update_krx_tickers_from_pykrx
-from src.watchlist_store import list_watchlist_users, load_watchlist, reset_watchlist, save_watchlist
+from src.watchlist_store import load_watchlist, reset_watchlist, save_watchlist
 
-APP_VERSION = "v12-holdings-colors"
+APP_VERSION = "v13-login"
 
 st.set_page_config(page_title="개인 투자 판단 보조기", layout="wide")
 
@@ -347,22 +348,53 @@ def holdings_view(holdings_df: pd.DataFrame, data_map: Dict[str, pd.DataFrame], 
     return out.sort_values(by=['추매점수','시장점수'], ascending=[False,False]).reset_index(drop=True)
 
 
+
+def render_login_gate() -> str | None:
+    seed_default_users()
+    if st.session_state.get('authenticated_user'):
+        return st.session_state['authenticated_user']
+
+    st.markdown("""
+    <div class="card" style="max-width:560px; margin:24px auto;">
+      <div class="section-title">로그인</div>
+      <div class="small-note">보유 종목, 평균단가, 관심종목은 로그인 후에만 표시됩니다.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.form('login_form', clear_on_submit=False):
+        login_user = st.text_input('사용자 ID', placeholder='예: master')
+        login_password = st.text_input('비밀번호', type='password')
+        submitted = st.form_submit_button('로그인', use_container_width=True)
+
+    if submitted:
+        ok, user_info = verify_login(login_user.strip(), login_password)
+        if ok:
+            st.session_state['authenticated_user'] = login_user.strip()
+            st.session_state['authenticated_role'] = user_info.get('role', 'user')
+            st.success(f"{login_user.strip()} 로그인 성공")
+            st.rerun()
+        else:
+            st.error('로그인 실패: 사용자 ID 또는 비밀번호를 확인하세요.')
+
+    st.info('초기 계정은 README에 안내된 기본 계정을 사용한 뒤 users.json에서 변경하세요.')
+    return None
+
+
 def main() -> None:
     st.title('개인 투자 판단 보조기')
     st.caption('관심 종목과 보유 종목을 분리하고, 사용자별 관심 목록과 평균단가 기반 추매 판단을 함께 보는 대시보드')
 
+    active_user = render_login_gate()
+    if not active_user:
+        return
+
     with st.sidebar:
         st.header('설정')
-        default_users=['master','wife']
-        available_users=list_watchlist_users(default_users=default_users)
-        default_option=st.session_state.get('selected_user_option', available_users[0])
-        user_options=available_users + ['새 사용자 추가']
-        selected_user_option=st.selectbox('사용자 선택', options=user_options, index=user_options.index(default_option) if default_option in user_options else 0, key='selected_user_option')
-        custom_user=''
-        if selected_user_option == '새 사용자 추가':
-            custom_user=st.text_input('새 사용자 이름', placeholder='예: wife, master2')
-        active_user=custom_user.strip() if selected_user_option == '새 사용자 추가' else selected_user_option
-        active_user=active_user or available_users[0]
+        if st.button('로그아웃', use_container_width=True):
+            st.session_state.pop('authenticated_user', None)
+            st.session_state.pop('authenticated_role', None)
+            st.session_state.pop('ticker_text', None)
+            st.rerun()
 
         if st.session_state.get('active_user') != active_user:
             st.session_state['active_user']=active_user
@@ -371,6 +403,8 @@ def main() -> None:
             st.session_state['ticker_text']=', '.join(load_watchlist(active_user))
 
         st.caption(f'현재 사용자: {active_user}')
+        role = st.session_state.get('authenticated_role', 'user')
+        st.caption(f'권한: {role}')
         st.text_area('관심 종목 (쉼표로 구분)', key='ticker_text', help='미국: SOXL, QQQ / 한국: 종목명 검색으로 추가하거나 005930.KS 형식으로 직접 입력', height=120)
         c1,c2=st.columns(2)
         with c1:
