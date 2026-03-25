@@ -22,7 +22,7 @@ from src.indicators import add_indicators
 from src.krx_lookup import build_name_map, load_krx_tickers, search_krx_tickers, update_krx_tickers_from_pykrx
 from src.watchlist_store import load_watchlist, reset_watchlist, save_watchlist
 
-APP_VERSION = "v13-login"
+APP_VERSION = "v14-structure-risk"
 
 st.set_page_config(page_title="개인 투자 판단 보조기", layout="wide")
 
@@ -193,7 +193,7 @@ def build_contribution_chart(score_df: pd.DataFrame) -> alt.Chart:
 def style_summary(df: pd.DataFrame):
     def color_label(row):
         bg = label_to_color(row['판정'])
-        return [f'background-color: {bg}; color: white; font-weight: 700' if col == '판정' else '' for col in df.columns]
+        return [f'background-color: {bg}; color: white; font-weight: 700' if col == '판정' else (f"background-color: {'#16a34a' if str(row.get('구조훼손판정',''))=='유지' else '#f59e0b' if str(row.get('구조훼손판정',''))=='경고' else '#ea580c' if str(row.get('구조훼손판정',''))=='축소 후보' else '#b91c1c'}; color: white; font-weight: 700" if col == '구조훼손판정' else '') for col in df.columns]
     fmt = {col: '{:.2f}' for col in ['평균단가 대비(%)','현재가','RSI14','20일선 대비(%)','60일선 대비(%)','고점 대비(%)','52주 위치(%)','MACD 히스토그램','ATR14(%)','거래량 배수','점수'] if col in df.columns}
     return df.style.apply(color_label, axis=1).format(fmt, na_rep='-')
 
@@ -201,9 +201,83 @@ def style_summary(df: pd.DataFrame):
 def style_signal_table(df: pd.DataFrame):
     def color_label(row):
         bg = label_to_color(row['판정'])
-        return [f'background-color: {bg}; color: white; font-weight: 700' if col == '판정' else '' for col in df.columns]
+        return [f'background-color: {bg}; color: white; font-weight: 700' if col == '판정' else (f"background-color: {'#16a34a' if str(row.get('구조훼손판정',''))=='유지' else '#f59e0b' if str(row.get('구조훼손판정',''))=='경고' else '#ea580c' if str(row.get('구조훼손판정',''))=='축소 후보' else '#b91c1c'}; color: white; font-weight: 700" if col == '구조훼손판정' else '') for col in df.columns]
     return df.style.apply(color_label, axis=1).format({'총점':'{:.2f}'}, na_rep='-')
 
+
+
+def calc_structure_risk_score(row: pd.Series) -> tuple[float, str, str]:
+    score = 0.0
+    reasons = []
+
+    gap = row.get("평균단가 대비(%)", None)
+    ma20 = row.get("20일선 대비(%)", None)
+    ma60 = row.get("60일선 대비(%)", None)
+    macd_hist = row.get("MACD_hist", None)
+    rsi = row.get("RSI14", None)
+    profile_key = str(row.get("프로파일키", "DEFAULT"))
+
+    if pd.notna(gap):
+        if gap <= -15:
+            score += 3.0
+            reasons.append("평균단가 대비 손실 큼")
+        elif gap <= -10:
+            score += 2.0
+            reasons.append("평균단가 대비 손실 확대")
+        elif gap <= -5:
+            score += 1.0
+            reasons.append("평균단가 하회")
+
+    if pd.notna(ma20) and ma20 < 0:
+        score += 1.0
+        reasons.append("20일선 하회")
+
+    if pd.notna(ma60) and ma60 < 0:
+        score += 2.0
+        reasons.append("60일선 하회")
+
+    if pd.notna(macd_hist) and macd_hist < 0:
+        score += 1.0
+        reasons.append("MACD 약세")
+
+    if pd.notna(rsi) and rsi < 35:
+        score += 0.5
+        reasons.append("RSI 약세")
+
+    # Profile adjustments
+    if profile_key in {"SOXL", "TQQQ"}:
+        # 레버리지는 단순 손실보다 추세 훼손이 중요
+        score -= 0.5
+        if pd.notna(ma60) and ma60 < -5:
+            score += 1.0
+            reasons.append("레버리지 추세 훼손")
+    elif profile_key in {"KB_FINANCIAL", "SAMSUNG_FIRE_GROUP", "HYUNDAI_PREF_GROUP", "KT_DEFENSIVE", "HANA_FINANCIAL_GROUP"}:
+        # 배당/방어주는 완전 손절보다 경고/축소 위주
+        if pd.notna(gap) and gap <= -8:
+            score += 0.5
+        score -= 0.2
+    elif profile_key in {"NAVER", "SAMSUNG_BIO_GROWTH", "SHIFTUP_GROWTH"}:
+        # 성장주는 추세 훼손 시 더 민감
+        if pd.notna(ma20) and ma20 < 0 and pd.notna(ma60) and ma60 < 0:
+            score += 1.5
+            reasons.append("성장주 추세 동시 훼손")
+
+    score = max(0.0, round(score, 2))
+
+    if score >= 6:
+        label = "구조 훼손"
+        summary = "비중 축소 또는 전략 재점검 우선"
+    elif score >= 4:
+        label = "축소 후보"
+        summary = "추가매수 중단, 일부 축소 검토"
+    elif score >= 2:
+        label = "경고"
+        summary = "추세 훼손 조짐, 보수적 대응"
+    else:
+        label = "유지"
+        summary = "구조 훼손 신호 제한적"
+
+    return score, label, summary
 
 def style_holdings(df: pd.DataFrame):
     def row_styles(row):
@@ -232,6 +306,16 @@ def style_holdings(df: pd.DataFrame):
                         style = 'background-color: #fef2f2; color: #b91c1c; font-weight: 700'
                     elif val < 0:
                         style = 'background-color: #eff6ff; color: #1d4ed8; font-weight: 700'
+            elif col == '구조훼손판정':
+                label = str(row[col])
+                color_map = {
+                    '구조 훼손': '#b91c1c',
+                    '축소 후보': '#ea580c',
+                    '경고': '#f59e0b',
+                    '유지': '#16a34a',
+                }
+                bg = color_map.get(label, '#64748b')
+                style = f'background-color: {bg}; color: white; font-weight: 700'
             elif col == '추매판정':
                 label = str(row[col])
                 color_map = {
@@ -250,6 +334,17 @@ def style_holdings(df: pd.DataFrame):
                     style = 'background-color: #ede9fe; color: #6d28d9; font-weight: 700'
                 else:
                     style = 'background-color: #f1f5f9; color: #334155; font-weight: 700'
+            elif col == '구조훼손점수':
+                val = row[col]
+                if pd.notna(val):
+                    if val >= 6:
+                        style = 'background-color: #fee2e2; color: #991b1b; font-weight: 700'
+                    elif val >= 4:
+                        style = 'background-color: #ffedd5; color: #9a3412; font-weight: 700'
+                    elif val >= 2:
+                        style = 'background-color: #fef3c7; color: #92400e; font-weight: 700'
+                    else:
+                        style = 'background-color: #dcfce7; color: #166534; font-weight: 700'
             elif col == '추매점수':
                 val = row[col]
                 if pd.notna(val):
@@ -270,6 +365,7 @@ def style_holdings(df: pd.DataFrame):
         '평균단가 대비(%)': '{:.2f}',
         '평가손익': '{:.2f}',
         '시장점수': '{:.2f}',
+        '구조훼손점수': '{:.2f}',
         '추매점수': '{:.0f}',
     }
     return df.style.apply(row_styles, axis=1).format(fmt, na_rep='-')
