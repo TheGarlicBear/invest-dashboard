@@ -22,7 +22,7 @@ from src.indicators import add_indicators
 from src.krx_lookup import build_name_map, load_krx_tickers, search_krx_tickers, update_krx_tickers_from_pykrx
 from src.watchlist_store import load_watchlist, reset_watchlist, save_watchlist
 
-APP_VERSION = "v14.2-structure-risk-holdings-only"
+APP_VERSION = "v16-exit-and-ux"
 
 st.set_page_config(page_title="개인 투자 판단 보조기", layout="wide")
 
@@ -191,11 +191,50 @@ def build_contribution_chart(score_df: pd.DataFrame) -> alt.Chart:
 
 
 def style_summary(df: pd.DataFrame):
-    def color_label(row):
-        bg = label_to_color(row['판정'])
-        return [f'background-color: {bg}; color: white; font-weight: 700' if col == '판정' else (f"background-color: {'#16a34a' if str(row.get('구조훼손판정',''))=='유지' else '#f59e0b' if str(row.get('구조훼손판정',''))=='경고' else '#ea580c' if str(row.get('구조훼손판정',''))=='축소 후보' else '#b91c1c'}; color: white; font-weight: 700" if col == '구조훼손판정' else '') for col in df.columns]
-    fmt = {col: '{:.2f}' for col in ['평균단가 대비(%)','현재가','RSI14','20일선 대비(%)','60일선 대비(%)','고점 대비(%)','52주 위치(%)','MACD 히스토그램','ATR14(%)','거래량 배수','점수','구조훼손점수'] if col in df.columns}
-    return df.style.apply(color_label, axis=1).format(fmt, na_rep='-')
+    def row_styles(row):
+        styles = []
+        for col in df.columns:
+            style = ""
+            if col == '보유':
+                if str(row[col]) == '보유중':
+                    style = 'background-color: #1d4ed8; color: white; font-weight: 700'
+            elif col == '프로파일유형':
+                label = str(row[col])
+                if label == '개별':
+                    style = 'background-color: #dbeafe; color: #1d4ed8; font-weight: 700'
+                elif label == '세트':
+                    style = 'background-color: #ede9fe; color: #6d28d9; font-weight: 700'
+                elif label == '그룹':
+                    style = 'background-color: #ecfccb; color: #3f6212; font-weight: 700'
+                else:
+                    style = 'background-color: #f1f5f9; color: #334155; font-weight: 700'
+            elif col == '평균단가 대비(%)':
+                val = row[col]
+                if pd.notna(val):
+                    if val >= 3:
+                        style = 'background-color: #fee2e2; color: #991b1b; font-weight: 700'
+                    elif val > 0:
+                        style = 'background-color: #fef2f2; color: #b91c1c; font-weight: 700'
+                    elif val <= -5:
+                        style = 'background-color: #dbeafe; color: #1d4ed8; font-weight: 700'
+                    elif val < 0:
+                        style = 'background-color: #eff6ff; color: #1d4ed8; font-weight: 700'
+            elif col == '점수':
+                val = row[col]
+                if pd.notna(val):
+                    if val >= 5:
+                        style = 'background-color: #dcfce7; color: #166534; font-weight: 700'
+                    elif val >= 3:
+                        style = 'background-color: #ecfccb; color: #3f6212; font-weight: 700'
+                    elif val < 1:
+                        style = 'background-color: #fee2e2; color: #991b1b; font-weight: 700'
+            elif col == '판정':
+                bg = label_to_color(row['판정'])
+                style = f'background-color: {bg}; color: white; font-weight: 700'
+            styles.append(style)
+        return styles
+    fmt = {col: '{:.2f}' for col in ['평균단가 대비(%)','현재가','RSI14','20일선 대비(%)','60일선 대비(%)','고점 대비(%)','52주 위치(%)','MACD 히스토그램','ATR14(%)','거래량 배수','점수'] if col in df.columns}
+    return df.style.apply(row_styles, axis=1).format(fmt, na_rep='-')
 
 
 def style_signal_table(df: pd.DataFrame):
@@ -279,6 +318,82 @@ def calc_structure_risk_score(row: pd.Series) -> tuple[float, str, str]:
 
     return score, label, summary
 
+
+
+def calc_profit_signal_score(row: pd.Series) -> tuple[float, str, str]:
+    score = 0.0
+    reasons = []
+
+    gap = row.get("평균단가 대비(%)", None)
+    rsi = row.get("RSI14", None)
+    pos52 = row.get("52주 위치(%)", None)
+    ma20 = row.get("20일선 대비(%)", None)
+    macd_hist = row.get("MACD_hist", None)
+    profile_key = str(row.get("프로파일키", "DEFAULT"))
+
+    if pd.notna(gap):
+        if gap >= 25:
+            score += 3.0
+            reasons.append("평균단가 대비 수익 큼")
+        elif gap >= 15:
+            score += 2.0
+            reasons.append("수익 구간 진입")
+        elif gap >= 8:
+            score += 1.0
+            reasons.append("의미 있는 수익")
+
+    if pd.notna(rsi):
+        if rsi >= 72:
+            score += 2.0
+            reasons.append("RSI 과열")
+        elif rsi >= 65:
+            score += 1.0
+            reasons.append("RSI 고점권")
+
+    if pd.notna(pos52):
+        if pos52 >= 85:
+            score += 1.5
+            reasons.append("52주 상단권")
+        elif pos52 >= 75:
+            score += 0.5
+            reasons.append("52주 고점 근접")
+
+    if pd.notna(ma20) and ma20 > 8:
+        score += 1.0
+        reasons.append("20일선 과열 이격")
+
+    if pd.notna(macd_hist) and macd_hist < 0 and pd.notna(gap) and gap > 5:
+        score += 1.0
+        reasons.append("수익 상태에서 모멘텀 약화")
+
+    # Profile adjustments
+    if profile_key in {"SOXL", "TQQQ"}:
+        if pd.notna(gap) and gap >= 18:
+            score += 1.0
+            reasons.append("레버리지 수익 보호 필요")
+    elif profile_key in {"KB_FINANCIAL", "SAMSUNG_FIRE_GROUP", "HYUNDAI_PREF_GROUP", "KT_DEFENSIVE", "HANA_FINANCIAL_GROUP"}:
+        score -= 0.5  # 방어/배당주는 익절 압박 완화
+    elif profile_key in {"NAVER", "SAMSUNG_BIO_GROWTH", "SHIFTUP_GROWTH"}:
+        if pd.notna(rsi) and rsi >= 68:
+            score += 0.5
+
+    score = max(0.0, round(score, 2))
+
+    if score >= 5.5:
+        label = "일부축소 우선"
+        summary = "수익 보호 우선, 일부 비중 축소 검토"
+    elif score >= 3.5:
+        label = "분할익절 검토"
+        summary = "과열/수익 구간, 분할익절 고려"
+    elif score >= 2.0:
+        label = "과열 주의"
+        summary = "보유 유지 가능하나 신규추격 주의"
+    else:
+        label = "계속보유"
+        summary = "익절 압력 제한적"
+
+    return score, label, summary
+
 def style_holdings(df: pd.DataFrame):
     def row_styles(row):
         styles = []
@@ -306,6 +421,16 @@ def style_holdings(df: pd.DataFrame):
                         style = 'background-color: #fef2f2; color: #b91c1c; font-weight: 700'
                     elif val < 0:
                         style = 'background-color: #eff6ff; color: #1d4ed8; font-weight: 700'
+            elif col == '익절판정':
+                label = str(row[col])
+                color_map = {
+                    '일부축소 우선': '#b91c1c',
+                    '분할익절 검토': '#9333ea',
+                    '과열 주의': '#f59e0b',
+                    '계속보유': '#0f766e',
+                }
+                bg = color_map.get(label, '#64748b')
+                style = f'background-color: {bg}; color: white; font-weight: 700'
             elif col == '구조훼손판정':
                 label = str(row[col])
                 color_map = {
@@ -334,6 +459,17 @@ def style_holdings(df: pd.DataFrame):
                     style = 'background-color: #ede9fe; color: #6d28d9; font-weight: 700'
                 else:
                     style = 'background-color: #f1f5f9; color: #334155; font-weight: 700'
+            elif col == '익절점수':
+                val = row[col]
+                if pd.notna(val):
+                    if val >= 5.5:
+                        style = 'background-color: #fee2e2; color: #991b1b; font-weight: 700'
+                    elif val >= 3.5:
+                        style = 'background-color: #f3e8ff; color: #7e22ce; font-weight: 700'
+                    elif val >= 2:
+                        style = 'background-color: #fef3c7; color: #92400e; font-weight: 700'
+                    else:
+                        style = 'background-color: #ccfbf1; color: #115e59; font-weight: 700'
             elif col == '구조훼손점수':
                 val = row[col]
                 if pd.notna(val):
@@ -366,6 +502,7 @@ def style_holdings(df: pd.DataFrame):
         '평가손익': '{:.2f}',
         '시장점수': '{:.2f}',
         '구조훼손점수': '{:.2f}',
+        '익절점수': '{:.2f}',
         '추매점수': '{:.0f}',
     }
     return df.style.apply(row_styles, axis=1).format(fmt, na_rep='-')
@@ -444,7 +581,10 @@ def holdings_view(holdings_df: pd.DataFrame, data_map: Dict[str, pd.DataFrame], 
     _risk_results = out.apply(lambda r: calc_structure_risk_score(r), axis=1, result_type='expand')
     _risk_results.columns = ['구조훼손점수', '구조훼손판정', '구조훼손요약']
     out = pd.concat([out, _risk_results], axis=1)
-    ordered = ['종목','Ticker','평균단가','현재가','수량','손익률(%)','평균단가 대비(%)','평가손익','시장점수','구조훼손점수','구조훼손판정','추매점수','추매판정','프로필']
+    _profit_results = out.apply(lambda r: calc_profit_signal_score(r), axis=1, result_type='expand')
+    _profit_results.columns = ['익절점수', '익절판정', '익절요약']
+    out = pd.concat([out, _profit_results], axis=1)
+    ordered = ['종목','Ticker','평균단가','현재가','수량','손익률(%)','평균단가 대비(%)','평가손익','시장점수','구조훼손점수','구조훼손판정','익절점수','익절판정','추매점수','추매판정','프로필']
     ordered = [c for c in ordered if c in out.columns]
     return out[ordered].sort_values(by=['구조훼손점수','추매점수','시장점수'], ascending=[False,False,False]).reset_index(drop=True)
 
@@ -580,6 +720,7 @@ def main() -> None:
     tab1, tab2 = st.tabs(['관심 종목', '보유 종목'])
     with tab1:
         st.subheader('종합 상태판')
+        st.caption('핵심 컬럼 중심으로 색을 강화해 빠르게 읽을 수 있게 조정했다.')
         st.dataframe(style_summary(summary_df), width='stretch', hide_index=True)
         st.subheader('신호등형 요약표')
         st.caption('보유 여부와 평균단가 대비 괴리를 함께 보도록 확장했다.')
@@ -608,8 +749,9 @@ def main() -> None:
         if holdings_df.empty:
             st.info('현재 사용자 보유 종목 파일이 없습니다.')
         else:
-            st.caption('보유 종목은 data/holdings/<사용자>.csv 에서 로드된다. 평균단가 대비 괴리와 추매점수를 함께 본다.')
+            st.caption('보유 종목은 data/holdings/<사용자>.csv 에서 로드된다. 평균단가 대비 괴리, 구조 훼손 경고, 익절 신호를 함께 본다.')
             st.dataframe(style_holdings(holdings_view_df), width='stretch', hide_index=True)
+            st.caption('익절판정: 계속보유 / 과열 주의 / 분할익절 검토 / 일부축소 우선')
             if not holdings_view_df.empty:
                 st.markdown('#### 추매 후보 보기')
                 candidate_df = holdings_view_df[holdings_view_df['추매점수'] >= 2].copy()
