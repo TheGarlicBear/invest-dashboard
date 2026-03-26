@@ -1,6 +1,13 @@
 from __future__ import annotations
-
 from typing import Dict, List, Tuple
+
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+APP_ENV = os.getenv("APP_ENV")
+SECRET_KEY = os.getenv("SECRET_KEY")
 
 import altair as alt
 import pandas as pd
