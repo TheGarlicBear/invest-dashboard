@@ -36,6 +36,8 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     out["MA20"] = out["Close"].rolling(20).mean()
     out["MA60"] = out["Close"].rolling(60).mean()
+    out["MA120"] = out["Close"].rolling(120).mean()
+    out["MA200"] = out["Close"].rolling(200).mean()
     out["RSI14"] = calculate_rsi(out["Close"], 14)
 
     macd, signal, hist = calculate_macd(out["Close"])
@@ -56,6 +58,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     out["MA20DiffPct"] = (out["Close"] / out["MA20"] - 1) * 100
     out["MA60DiffPct"] = (out["Close"] / out["MA60"] - 1) * 100
+    out["MA120DiffPct"] = (out["Close"] / out["MA120"] - 1) * 100
+    out["MA200DiffPct"] = (out["Close"] / out["MA200"] - 1) * 100
+
 
     volume_ma20 = out["Volume"].rolling(20).mean().replace(0, np.nan)
     out["VolumeRatio"] = out["Volume"] / volume_ma20

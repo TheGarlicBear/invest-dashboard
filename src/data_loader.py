@@ -43,18 +43,57 @@ def fetch_single(ticker: str, period: str, interval: str) -> pd.DataFrame:
     return _normalize_frame(df)
 
 
+def fetch_current_price(ticker: str, fallback_df: pd.DataFrame | None = None) -> float:
+    tk = yf.Ticker(ticker)
+
+    # 1순위: fast_info
+    try:
+        fi = tk.fast_info
+        if fi:
+            for key in ["lastPrice", "regularMarketPrice", "currentPrice"]:
+                val = fi.get(key)
+                if val is not None and pd.notna(val):
+                    return float(val)
+    except Exception:
+        pass
+
+    # 2순위: 최근 일봉 마지막 종가
+    try:
+        hist = tk.history(period="5d", interval="1d", auto_adjust=False)
+        if hist is not None and not hist.empty:
+            hist = hist.dropna(subset=["Close"])
+            if not hist.empty:
+                return float(hist["Close"].iloc[-1])
+    except Exception:
+        pass
+
+    # 3순위: 이미 받아둔 df 마지막 Close
+    if fallback_df is not None and not fallback_df.empty:
+        return float(fallback_df["Close"].iloc[-1])
+
+    raise ValueError(f"현재가 조회 실패: {ticker}")
+
+
 def fetch_multiple(
     tickers: Iterable[str], period: str, interval: str
-) -> Tuple[Dict[str, pd.DataFrame], Dict[str, str], Dict[str, str]]:
+) -> Tuple[Dict[str, pd.DataFrame], Dict[str, str], Dict[str, str], Dict[str, float]]:
     data_map: Dict[str, pd.DataFrame] = {}
     errors: Dict[str, str] = {}
     display_names: Dict[str, str] = {}
+    price_map: Dict[str, float] = {}
 
     for ticker in tickers:
         try:
-            data_map[ticker] = fetch_single(ticker=ticker, period=period, interval=interval)
+            df = fetch_single(ticker=ticker, period=period, interval=interval)
+            data_map[ticker] = df
             display_names[ticker] = get_display_name(ticker)
-        except Exception as exc:  # noqa: BLE001
+
+            try:
+                price_map[ticker] = fetch_current_price(ticker, fallback_df=df)
+            except Exception:
+                price_map[ticker] = float(df["Close"].iloc[-1])
+
+        except Exception as exc:
             errors[ticker] = str(exc)
 
-    return data_map, errors, display_names
+    return data_map, errors, display_names, price_map

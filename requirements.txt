@@ -4,3 +4,5 @@ yfinance>=0.2.43
 altair>=5.4.1
 pykrx>=1.0.51
 python-dotenv
+sqlalchemy
+psycopg2-binary

@@ -6,6 +6,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from src.transactions_service import record_buy, record_sell, list_transactions
+
 from src.config import (
     DEFAULT_INTERVAL,
     DEFAULT_PERIOD,
@@ -20,13 +22,11 @@ from src.evaluator import evaluate_latest, get_profile_for_ticker
 from src.indicators import add_indicators
 from src.krx_lookup import build_name_map, load_krx_tickers, search_krx_tickers, update_krx_tickers_from_pykrx
 from src.holding_signal import decide_final_action
-from src.transactions_service import record_buy, record_sell, list_transactions
 from src.store_layer import (
     load_watchlist,
     load_holdings,
     save_watchlist,
     save_holdings,
-    bootstrap_user_session,
 )
 
 APP_VERSION = "v16-exit-and-ux"
@@ -52,13 +52,10 @@ CUSTOM_CSS = """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=60 * 5)
-def load_market_data(
-    tickers: Tuple[str, ...],
-    period: str,
-    interval: str
-) -> Tuple[Dict[str, pd.DataFrame], Dict[str, str], Dict[str, str], Dict[str, float]]:
+@st.cache_data(ttl=60 * 30)
+def load_market_data(tickers: Tuple[str, ...], period: str, interval: str) -> Tuple[Dict[str, pd.DataFrame], Dict[str, str], Dict[str, str]]:
     return fetch_multiple(tickers=tickers, period=period, interval=interval)
+
 
 @st.cache_data(ttl=60 * 60)
 def load_krx_lookup() -> pd.DataFrame:
@@ -105,52 +102,32 @@ def append_ticker_from_search(ticker_to_add: str) -> None:
     st.session_state["ticker_text"] = ", ".join(current)
 
 
-def _parse_ticker_text(current_text: str | None) -> list[str]:
-    current_text = current_text or ""
-    clean = []
-    for raw in current_text.split(','):
-        t = raw.strip().upper()
-        if t and t not in clean:
-            clean.append(t)
-    return clean
-
-
 def persist_current_watchlist(user_id: str, current_text: str | None = None) -> None:
-    items = _parse_ticker_text(current_text if current_text is not None else st.session_state.get("ticker_text", ""))
+    if current_text is None:
+        current_text = st.session_state.get("ticker_text", "")
+    save_watchlist_for_user(user_id=user_id, tickers=current_text, is_guest=bool(st.session_state.get('is_guest')))
     if user_id == 'guest' or st.session_state.get('is_guest'):
-        st.session_state['guest_watchlist'] = items
-        st.session_state['ticker_text'] = ", ".join(items)
         st.session_state["watchlist_notice"] = "Guest 모드에서는 저장되지 않습니다. 현재 세션에서만 유지됩니다."
-        return
-
-    save_watchlist(user_id, items)
-    st.session_state['ticker_text'] = ", ".join(items)
-    st.session_state["watchlist_notice"] = f"{user_id} 관심종목을 DB에 저장했습니다."
+    else:
+        st.session_state["watchlist_notice"] = f"{user_id} 관심종목을 DB에 저장했습니다."
 
 
 def reset_current_watchlist(user_id: str) -> None:
-    default_items = list(DEFAULT_TICKERS)
-    if user_id == 'guest' or st.session_state.get('is_guest'):
-        st.session_state['guest_watchlist'] = default_items
-        st.session_state["ticker_text"] = ", ".join(default_items)
-        st.session_state["watchlist_notice"] = "Guest 관심종목을 기본값으로 초기화했습니다."
-        return
-
-    save_watchlist(user_id, default_items)
+    reset_watchlist_for_user(user_id=user_id, is_guest=bool(st.session_state.get('is_guest')))
+    default_items = load_watchlist(user_id)
     st.session_state["ticker_text"] = ", ".join(default_items)
-    st.session_state["watchlist_notice"] = f"{user_id} 관심종목을 DB 기본값으로 초기화했습니다."
+    if user_id == 'guest' or st.session_state.get('is_guest'):
+        st.session_state["watchlist_notice"] = "Guest 관심종목을 기본값으로 초기화했습니다."
+    else:
+        st.session_state["watchlist_notice"] = f"{user_id} 관심종목을 DB 기본값으로 초기화했습니다."
 
 def format_pct(value: float | None) -> str:
     if value is None or pd.isna(value):
         return "-"
     return f"{value:.2f}%"
 
-def market_summary_rows(
-    data_map: Dict[str, pd.DataFrame],
-    display_names: Dict[str, str],
-    holdings_df: pd.DataFrame,
-    price_map: Dict[str, float],
-) -> pd.DataFrame:
+
+def market_summary_rows(data_map: Dict[str, pd.DataFrame], display_names: Dict[str, str], holdings_df: pd.DataFrame) -> pd.DataFrame:
     rows=[]
     holding_map = holdings_df.set_index('ticker').to_dict('index') if not holdings_df.empty else {}
     for ticker, raw_df in data_map.items():
@@ -159,8 +136,8 @@ def market_summary_rows(
         evaluation = evaluate_latest(latest.to_dict(), ticker)
         hold = holding_map.get(ticker, {})
         avg_price = pd.to_numeric(hold.get('avg_price'), errors='coerce') if hold else None
-        qty = pd.to_numeric(hold.get('qty', hold.get('quantity')), errors='coerce') if hold else None
-        current_price = float(price_map.get(ticker, latest['Close']))
+        qty = pd.to_numeric(hold.get('qty'), errors='coerce') if hold else None
+        current_price = float(latest['Close'])
         avg_gap = ((current_price / avg_price) - 1) * 100 if avg_price and avg_price > 0 else None
         rows.append({
             '종목': display_names.get(ticker, ticker),
@@ -200,14 +177,11 @@ def build_signal_table(data_map: Dict[str, pd.DataFrame], display_names: Dict[st
         rows.append({'종목': display_names.get(ticker, ticker), '총점': _safe_round(evaluation.score,2), 'RSI': state_badge(score_to_signal(detail.get('RSI14',0))), '낙폭': state_badge(score_to_signal(detail.get('고점 대비 낙폭',0))), '추세': state_badge(score_to_signal(trend_score)), 'MACD': state_badge(score_to_signal(detail.get('MACD 히스토그램',0))), '변동성': state_badge(score_to_signal(detail.get('ATR14 변동성',0))), '판정': evaluation.label, '핵심 코멘트': evaluation.comment})
     return pd.DataFrame(rows).sort_values(by='총점', ascending=False).reset_index(drop=True)
 
+
 def build_chart_frame(df: pd.DataFrame) -> pd.DataFrame:
     enriched = add_indicators(df)
-    return (
-        enriched[["Date", "Close", "MA20", "MA60", "MA120", "MA200"]]
-        .set_index("Date")
-        .dropna(how="all")
-        .round(2)
-    )
+    return enriched[['Date','Close','MA20','MA60']].set_index('Date').dropna(how='all').round(2)
+
 
 def build_score_table(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     latest = add_indicators(df).iloc[-1]
@@ -573,12 +547,7 @@ def render_profile_card(ticker: str, display_name: str) -> None:
     )
 
 
-def holdings_view(
-    holdings_df: pd.DataFrame,
-    data_map: Dict[str, pd.DataFrame],
-    display_names: Dict[str, str],
-    price_map: Dict[str, float],
-) -> pd.DataFrame:
+def holdings_view(holdings_df: pd.DataFrame, data_map: Dict[str, pd.DataFrame], display_names: Dict[str, str]) -> pd.DataFrame:
     if holdings_df.empty:
         return pd.DataFrame()
     rows=[]
@@ -587,9 +556,9 @@ def holdings_view(
         if ticker not in data_map:
             continue
         latest = add_indicators(data_map[ticker]).iloc[-1]
-        current_price = float(price_map.get(ticker, latest['Close']))
+        current_price=float(latest['Close'])
         avg=float(row['avg_price'])
-        qty=float(row.get('qty', row.get('quantity', 0)))
+        qty=float(row['qty'])
         pnl=(current_price-avg)*qty
         ret=((current_price/avg)-1)*100 if avg else None
         eval_result = evaluate_latest(latest.to_dict(), ticker)
@@ -607,7 +576,7 @@ def holdings_view(
         elif add_score >= 0: add_label='관망'
         else: add_label='추격 금지'
         rows.append({
-            '종목': display_names.get(ticker, row.get('name', ticker) or ticker),
+            '종목': display_names.get(ticker, row['name'] or ticker),
             'Ticker': ticker,
             '평균단가': round(avg,2),
             '현재가': round(current_price,2),
@@ -656,7 +625,7 @@ def render_login_gate() -> str | None:
     with st.form('login_form', clear_on_submit=False):
         login_user = st.text_input('사용자 ID', placeholder='예: master')
         login_password = st.text_input('비밀번호', type='password')
-        submitted = st.form_submit_button('로그인', width='stretch')
+        submitted = st.form_submit_button('로그인', use_container_width=True)
 
     if submitted:
         ok, user_info = verify_login(login_user.strip(), login_password)
@@ -669,7 +638,7 @@ def render_login_gate() -> str | None:
         else:
             st.error('로그인 실패: 사용자 ID 또는 비밀번호를 확인하세요.')
 
-    if st.button('Guest로 시작', width='stretch'):
+    if st.button('Guest로 시작', use_container_width=True):
         st.session_state['authenticated_user'] = 'guest'
         st.session_state['authenticated_role'] = 'guest'
         st.session_state['is_guest'] = True
@@ -680,9 +649,7 @@ def render_login_gate() -> str | None:
     st.info('초기 계정은 README에 안내된 기본 계정을 사용한 뒤 users.json에서 변경하세요.')
     return st.session_state.get('authenticated_user')
 
-
 def render_trade_panel(active_user: str):
-    st.markdown("---")
     st.subheader("거래 기록 입력")
 
     if st.session_state.get("is_guest"):
@@ -692,19 +659,19 @@ def render_trade_panel(active_user: str):
     with st.form("trade_form", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
         with c1:
-            trade_ticker = st.text_input("종목 코드", placeholder="예: MSFT 또는 005930.KS").strip().upper()
+            trade_ticker = st.text_input("종목 코드", placeholder="예: AAPL 또는 005930").strip().upper()
         with c2:
             trade_qty = st.number_input("수량", min_value=1, step=1, value=1)
         with c3:
             trade_price = st.number_input("가격", min_value=0.0, step=0.01, value=0.0, format="%.4f")
 
-        trade_memo = st.text_input("메모", placeholder="예: 1차 진입 / 분할매수 / 일부익절")
+        c4, c5 = st.columns(2)
+        with c4:
+            buy_submitted = st.form_submit_button("매수 기록")
+        with c5:
+            sell_submitted = st.form_submit_button("매도 기록")
 
-        b1, b2 = st.columns(2)
-        with b1:
-            buy_submitted = st.form_submit_button("매수 기록", width="stretch")
-        with b2:
-            sell_submitted = st.form_submit_button("매도 기록", width="stretch")
+        trade_memo = st.text_input("메모", placeholder="예: 1차 진입, 분할매도, 테스트")
 
     if buy_submitted:
         if not trade_ticker:
@@ -713,8 +680,15 @@ def render_trade_panel(active_user: str):
         if trade_price <= 0:
             st.error("가격은 0보다 커야 합니다.")
             return
+
         try:
-            record_buy(username=active_user, ticker=trade_ticker, quantity=int(trade_qty), price=float(trade_price), memo=trade_memo)
+            record_buy(
+                username=active_user,
+                ticker=trade_ticker,
+                quantity=int(trade_qty),
+                price=float(trade_price),
+                memo=trade_memo,
+            )
             st.success(f"{trade_ticker} 매수 기록이 저장되었습니다.")
             st.rerun()
         except Exception as e:
@@ -727,8 +701,15 @@ def render_trade_panel(active_user: str):
         if trade_price <= 0:
             st.error("가격은 0보다 커야 합니다.")
             return
+
         try:
-            record_sell(username=active_user, ticker=trade_ticker, quantity=int(trade_qty), price=float(trade_price), memo=trade_memo)
+            record_sell(
+                username=active_user,
+                ticker=trade_ticker,
+                quantity=int(trade_qty),
+                price=float(trade_price),
+                memo=trade_memo,
+            )
             st.success(f"{trade_ticker} 매도 기록이 저장되었습니다.")
             st.rerun()
         except Exception as e:
@@ -741,52 +722,9 @@ def render_trade_panel(active_user: str):
         tx_rows = list_transactions(active_user, limit=20)
         if tx_rows:
             tx_df = pd.DataFrame(tx_rows)
-
-            # 1) BUY / SELL -> 매수 / 매도
-            if "tx_type" in tx_df.columns:
-                tx_df["tx_type"] = tx_df["tx_type"].replace({
-                    "BUY": "매수",
-                    "SELL": "매도",
-                })
-
-            # 2) 컬럼명 한글화
-            tx_df = tx_df.rename(columns={
-                "ticker": "종목",
-                "tx_type": "구분",
-                "quantity": "수량",
-                "price": "가격",
-                "fee": "수수료",
-                "memo": "메모",
-                "realized_pnl": "실현손익",
-                "executed_at": "거래시간",
-            })
-
-            # 3) 숫자 컬럼 numeric 정리
-            numeric_cols = ["수량", "가격", "수수료", "실현손익"]
-            for col in numeric_cols:
-                if col in tx_df.columns:
-                    tx_df[col] = pd.to_numeric(tx_df[col], errors="coerce").astype(float)
-
-            # 4) 거래시간 포맷
-            if "거래시간" in tx_df.columns:
-                tx_df["거래시간"] = pd.to_datetime(tx_df["거래시간"]).dt.strftime("%Y-%m-%d %H:%M")
-
-            # 5) 표시
-            st.dataframe(
-                tx_df,
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "종목": st.column_config.TextColumn("종목"),
-                    "구분": st.column_config.TextColumn("구분"),
-                    "수량": st.column_config.NumberColumn("수량", format="%,.2f"),
-                    "가격": st.column_config.NumberColumn("가격", format="%,.2f"),
-                    "수수료": st.column_config.NumberColumn("수수료", format="%,.2f"),
-                    "실현손익": st.column_config.NumberColumn("실현손익", format="%,.2f"),
-                    "메모": st.column_config.TextColumn("메모"),
-                    "거래시간": st.column_config.TextColumn("거래시간"),
-                },
-            )
+            if "executed_at" in tx_df.columns:
+                tx_df["executed_at"] = tx_df["executed_at"].astype(str)
+            st.dataframe(tx_df, use_container_width=True, hide_index=True)
         else:
             st.caption("거래 기록이 없습니다.")
     except Exception as e:
@@ -800,40 +738,36 @@ def main() -> None:
     if not active_user:
         return
 
-    if st.session_state.get('active_user') != active_user or 'ticker_text' not in st.session_state:
-        st.session_state['active_user'] = active_user
-        if active_user == 'guest' or st.session_state.get('is_guest'):
-            items = st.session_state.get('guest_watchlist', list(DEFAULT_TICKERS))
-        else:
-            items = load_watchlist(active_user)
-            if not items:
-                items = list(DEFAULT_TICKERS)
-        st.session_state['ticker_text'] = ', '.join(items)
-
     with st.sidebar:
         st.header('설정')
-        if st.button('로그아웃', width='stretch'):
+        if st.button('로그아웃', use_container_width=True):
             st.session_state.pop('authenticated_user', None)
             st.session_state.pop('authenticated_role', None)
             st.session_state.pop('ticker_text', None)
             st.session_state.pop('is_guest', None)
             st.session_state.pop('guest_watchlist', None)
-            st.session_state.pop('active_user', None)
             st.rerun()
 
         st.caption(f'현재 사용자: {active_user}')
         role = st.session_state.get('authenticated_role', 'user')
         st.caption(f'권한: {role}')
+        if active_user != 'guest':
+            try:
+                db_watch = load_watchlist(active_user)
+                if db_watch is not None:
+                    st.caption(f'DB 관심종목 수: {len(db_watch)}')
+            except Exception:
+                pass
         if active_user == 'guest':
             st.warning('Guest 모드입니다. 저장은 현재 세션에서만 유지됩니다.')
         current_watchlist_text = st.text_area('관심 종목 (쉼표로 구분)', key='ticker_text', help='미국: SOXL, QQQ / 한국: 종목명 검색으로 추가하거나 005930.KS 형식으로 직접 입력', height=120)
         c1,c2=st.columns(2)
         with c1:
-            if st.button('관심종목 저장', width='stretch'):
+            if st.button('관심종목 저장', use_container_width=True):
                 persist_current_watchlist(active_user, current_watchlist_text)
                 st.rerun()
         with c2:
-            if st.button('초기화', width='stretch'):
+            if st.button('초기화', use_container_width=True):
                 reset_current_watchlist(active_user)
                 st.rerun()
         if st.session_state.get('watchlist_notice'):
@@ -845,7 +779,7 @@ def main() -> None:
         search_name=st.text_input('종목명/코드 검색', placeholder='예: 삼성, 하이닉스, 005930')
         with st.expander('최신 KRX 목록 갱신(선택)', expanded=False):
             st.caption('기본값은 전체 KRX CSV입니다. 실패해도 기존 CSV를 계속 사용합니다.')
-            if st.button('KRX 목록 업데이트', width='stretch'):
+            if st.button('KRX 목록 업데이트', use_container_width=True):
                 ok, message, refreshed_df = update_krx_tickers_from_pykrx()
                 if ok:
                     load_krx_lookup.clear()
@@ -863,11 +797,11 @@ def main() -> None:
             selected_option = st.selectbox('검색 결과', options=matched_df['표시'].tolist())
             selected_row = matched_df.loc[matched_df['표시'] == selected_option].iloc[0]
             st.caption(f"선택: {selected_row['name']} ({selected_row['ticker_yf']})")
-            st.button('관심 종목에 추가', width='stretch', on_click=append_ticker_from_search, args=(selected_row['ticker_yf'],))
+            st.button('관심 종목에 추가', use_container_width=True, on_click=append_ticker_from_search, args=(selected_row['ticker_yf'],))
 
         period=st.selectbox('조회 기간', PERIOD_OPTIONS, index=PERIOD_OPTIONS.index(DEFAULT_PERIOD))
         interval=st.selectbox('간격', INTERVAL_OPTIONS, index=INTERVAL_OPTIONS.index(DEFAULT_INTERVAL))
-        if st.button('새로고침', type='primary', width='stretch'):
+        if st.button('새로고침', type='primary', use_container_width=True):
             load_market_data.clear()
 
     holdings_df = load_holdings(active_user)
@@ -883,12 +817,7 @@ def main() -> None:
         return
 
     with st.spinner('시장 데이터를 불러오는 중...'):
-        data_map, errors, _, price_map = load_market_data(
-            tickers=tickers,
-            period=period,
-            interval=interval
-        )
-
+        data_map, errors, _ = load_market_data(tickers=tickers, period=period, interval=interval)
 
     if errors:
         with st.expander('불러오지 못한 종목', expanded=False):
@@ -900,15 +829,9 @@ def main() -> None:
 
     krx_df = load_krx_lookup()
     display_names = normalize_display_names(tuple(data_map.keys()), krx_df)
-    summary_df = market_summary_rows(data_map, display_names, holdings_df, price_map)
+    summary_df = market_summary_rows(data_map, display_names, holdings_df)
     signal_df = build_signal_table(data_map, display_names)
-
-    if not holdings_df.empty:
-        if "quantity" in holdings_df.columns:
-            holdings_df = holdings_df[holdings_df["quantity"] > 0].copy()
-        elif "qty" in holdings_df.columns:
-            holdings_df = holdings_df[holdings_df["qty"] > 0].copy()
-    holdings_view_df = holdings_view(holdings_df, data_map, display_names, price_map)
+    holdings_view_df = holdings_view(holdings_df, data_map, display_names)
 
     render_top_metrics(summary_df, len(data_map), len(holdings_df))
 
@@ -929,34 +852,13 @@ def main() -> None:
         render_profile_card(selected_ticker, selected_name)
         c1, c2 = st.columns([1.3, 1])
         with c1:
-            chart_df = build_chart_frame(data_map[selected_ticker]).reset_index().melt(
-                'Date',
-                var_name='구분',
-                value_name='가격'
-            )
-
-            chart_df["구분"] = pd.Categorical(
-                chart_df["구분"],
-                categories=["Close", "MA20", "MA60", "MA120", "MA200"],
-                ordered=True
-            )
-
-            chart = alt.Chart(chart_df).mark_line().encode(
-                x='Date:T',
-                y='가격:Q',
-                color=alt.Color(
-                    '구분:N',
-                    sort=["Close", "MA20", "MA60", "MA120", "MA200"]
-                ),
-                tooltip=['Date:T', '구분:N', alt.Tooltip('가격:Q', format=',.2f')]
-            ).properties(height=360)
-
-            st.altair_chart(chart, width='stretch')
-
+            chart_df = build_chart_frame(data_map[selected_ticker]).reset_index().melt('Date', var_name='구분', value_name='가격')
+            chart = alt.Chart(chart_df).mark_line().encode(x='Date:T', y='가격:Q', color='구분:N', tooltip=['Date:T','구분:N', alt.Tooltip('가격:Q', format='.2f')]).properties(height=360)
+            st.altair_chart(chart, use_container_width=True)
         with c2:
             score_df = build_score_table(data_map[selected_ticker], selected_ticker)
             st.markdown('#### 항목별 점수 기여도')
-            st.altair_chart(build_contribution_chart(score_df), width='stretch')
+            st.altair_chart(build_contribution_chart(score_df), use_container_width=True)
         st.markdown('#### 정량 점수표')
         st.dataframe(score_df, width='stretch', hide_index=True)
 
@@ -968,7 +870,6 @@ def main() -> None:
             st.caption('보유 종목은 data/holdings/<사용자>.csv 에서 로드된다. 평균단가 대비 괴리, 구조 훼손 경고, 익절 신호를 함께 본다.')
             st.dataframe(style_holdings(holdings_view_df), width='stretch', hide_index=True)
             st.caption('익절판정: 계속보유 / 과열 주의 / 분할익절 검토 / 일부축소 우선')
-    
             if not holdings_view_df.empty:
                 st.markdown('#### 추매 후보 보기')
                 candidate_df = holdings_view_df[holdings_view_df['추매점수'] >= 2].copy()
