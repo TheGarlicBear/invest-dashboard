@@ -6,6 +6,14 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+import os
+import json
+from datetime import datetime, date
+import traceback
+from sqlalchemy import create_engine, text
+
+
+
 from src.config import (
     DEFAULT_INTERVAL,
     DEFAULT_PERIOD,
@@ -29,9 +37,16 @@ from src.store_layer import (
     bootstrap_user_session,
 )
 
-APP_VERSION = "v16-exit-and-ux"
+APP_VERSION = "v18-stability-and-trade-date"
 
 st.set_page_config(page_title="개인 투자 판단 보조기", layout="wide")
+
+if "session_created_at" not in st.session_state:
+    st.session_state["session_created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+st.sidebar.caption(f"APP_VERSION: {APP_VERSION}")
+st.sidebar.caption(f"Session started: {st.session_state['session_created_at']}")
+st.sidebar.caption(f"PID: {os.getpid()}")
 
 CUSTOM_CSS = """
 <style>
@@ -96,54 +111,313 @@ def normalize_display_names(tickers: Tuple[str, ...], krx_df: pd.DataFrame) -> D
     name_map = get_name_map(krx_df)
     return {ticker: name_map.get(str(ticker).upper(), ticker) for ticker in tickers}
 
+def _normalize_watchlist_items(raw_items, default_score: int = 3) -> list[dict]:
+    clean_items = []
+    seen = set()
+
+    if raw_items is None:
+        raw_items = []
+
+    for item in raw_items:
+        if isinstance(item, dict):
+            ticker = str(item.get("ticker", "")).strip().upper()
+            score = item.get("attractiveness_score", default_score)
+        else:
+            ticker = str(item).strip().upper()
+            score = default_score
+
+        if not ticker or ticker in seen:
+            continue
+
+        try:
+            score = int(score)
+        except Exception:
+            score = default_score
+
+        score = max(1, min(5, score))
+
+        clean_items.append({
+            "ticker": ticker,
+            "attractiveness_score": score,
+        })
+        seen.add(ticker)
+
+    return clean_items
+
 
 def append_ticker_from_search(ticker_to_add: str) -> None:
-    current_text = st.session_state.get("ticker_text", "")
-    current = [item.strip().upper() for item in current_text.split(",") if item.strip()]
-    if ticker_to_add.upper() not in current:
-        current.append(ticker_to_add.upper())
-    st.session_state["ticker_text"] = ", ".join(current)
+    current_items = _normalize_watchlist_items(st.session_state.get("watchlist_items", []))
+    current_tickers = [item["ticker"] for item in current_items]
+
+    if ticker_to_add.upper() not in current_tickers:
+        current_items.append({
+            "ticker": ticker_to_add.upper(),
+            "attractiveness_score": 3,
+        })
+
+    st.session_state["watchlist_items"] = current_items
+    st.session_state["watchlist_editor_needs_sync"] = True
 
 
 def _parse_ticker_text(current_text: str | None) -> list[str]:
     current_text = current_text or ""
     clean = []
-    for raw in current_text.split(','):
+    for raw in current_text.split(","):
         t = raw.strip().upper()
         if t and t not in clean:
             clean.append(t)
     return clean
 
 
-def persist_current_watchlist(user_id: str, current_text: str | None = None) -> None:
-    items = _parse_ticker_text(current_text if current_text is not None else st.session_state.get("ticker_text", ""))
-    if user_id == 'guest' or st.session_state.get('is_guest'):
-        st.session_state['guest_watchlist'] = items
-        st.session_state['ticker_text'] = ", ".join(items)
+def persist_current_watchlist(user_id: str, current_text: str | None = None, default_score: int = 3) -> None:
+    tickers = _parse_ticker_text(
+        current_text if current_text is not None else st.session_state.get("ticker_text_input", "")
+    )
+
+    existing_items = _normalize_watchlist_items(st.session_state.get("watchlist_items", []))
+    score_map = {item["ticker"]: item["attractiveness_score"] for item in existing_items}
+
+    items = [
+        {
+            "ticker": t,
+            "attractiveness_score": score_map.get(t, default_score),
+        }
+        for t in tickers
+    ]
+
+    if user_id == "guest" or st.session_state.get("is_guest"):
+        st.session_state["guest_watchlist"] = tickers
+        st.session_state["watchlist_items"] = items
         st.session_state["watchlist_notice"] = "Guest 모드에서는 저장되지 않습니다. 현재 세션에서만 유지됩니다."
+        st.session_state["watchlist_editor_needs_sync"] = True
         return
 
     save_watchlist(user_id, items)
-    st.session_state['ticker_text'] = ", ".join(items)
-    st.session_state["watchlist_notice"] = f"{user_id} 관심종목을 DB에 저장했습니다."
+    st.session_state["watchlist_items"] = items
+    st.session_state["watchlist_notice"] = f"{user_id} 관심종목을 저장했습니다."
+    st.session_state["watchlist_editor_needs_sync"] = True
 
 
 def reset_current_watchlist(user_id: str) -> None:
-    default_items = list(DEFAULT_TICKERS)
-    if user_id == 'guest' or st.session_state.get('is_guest'):
-        st.session_state['guest_watchlist'] = default_items
-        st.session_state["ticker_text"] = ", ".join(default_items)
+    default_items = [{"ticker": t, "attractiveness_score": 3} for t in list(DEFAULT_TICKERS)]
+
+    if user_id == "guest" or st.session_state.get("is_guest"):
+        st.session_state["guest_watchlist"] = [item["ticker"] for item in default_items]
+        st.session_state["watchlist_items"] = default_items
         st.session_state["watchlist_notice"] = "Guest 관심종목을 기본값으로 초기화했습니다."
+        st.session_state["watchlist_editor_needs_sync"] = True
         return
 
     save_watchlist(user_id, default_items)
-    st.session_state["ticker_text"] = ", ".join(default_items)
-    st.session_state["watchlist_notice"] = f"{user_id} 관심종목을 DB 기본값으로 초기화했습니다."
+    st.session_state["watchlist_items"] = default_items
+    st.session_state["watchlist_notice"] = f"{user_id} 관심종목을 기본값으로 초기화했습니다."
+    st.session_state["watchlist_editor_needs_sync"] = True
 
 def format_pct(value: float | None) -> str:
     if value is None or pd.isna(value):
         return "-"
     return f"{value:.2f}%"
+
+
+def infer_currency_from_ticker(ticker: str) -> str:
+    t = str(ticker).upper()
+    if t.endswith('.KS') or t.endswith('.KQ') or (t.isdigit() and len(t) == 6):
+        return 'KRW'
+    return 'USD'
+
+
+def format_money_by_currency(value: float | int | None, currency: str) -> str:
+    if value is None or pd.isna(value):
+        return '-'
+    amount = float(value)
+    if currency == 'KRW':
+        return f"₩{amount:,.0f}"
+    return f"${amount:,.2f}"
+
+
+def is_test_trade_memo(memo: object) -> bool:
+    if memo is None or pd.isna(memo):
+        return False
+    s = str(memo).strip().lower()
+    return any(k in s for k in ['test', '테스트', '시험'])
+
+
+@st.cache_resource
+def get_db_engine():
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError("DATABASE_URL not set")
+    return create_engine(db_url)
+
+
+def get_user_id_db(username: str) -> int | None:
+    with get_db_engine().begin() as conn:
+        row = conn.execute(text("SELECT id FROM users WHERE username = :u"), {"u": username}).fetchone()
+        return row[0] if row else None
+
+
+def _pnl_adjustment_path(username: str) -> str:
+    base_dir = os.path.join("data", "user_overrides")
+    os.makedirs(base_dir, exist_ok=True)
+    safe = str(username).strip().replace("/", "_")
+    return os.path.join(base_dir, f"{safe}_pnl_adjustment.json")
+
+
+def load_pnl_adjustments(username: str) -> dict:
+    path = _pnl_adjustment_path(username)
+    if not os.path.exists(path):
+        return {"KRW": 0.0, "USD": 0.0}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {
+            "KRW": float(data.get("KRW", 0.0) or 0.0),
+            "USD": float(data.get("USD", 0.0) or 0.0),
+        }
+    except Exception:
+        return {"KRW": 0.0, "USD": 0.0}
+
+
+def save_pnl_adjustments(username: str, krw: float, usd: float) -> None:
+    path = _pnl_adjustment_path(username)
+    payload = {"KRW": float(krw or 0.0), "USD": float(usd or 0.0)}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def fetch_transactions_admin(username: str, limit: int = 300) -> pd.DataFrame:
+    user_id = get_user_id_db(username)
+    if user_id is None:
+        return pd.DataFrame()
+    with get_db_engine().begin() as conn:
+        rows = conn.execute(text("""
+            SELECT id, ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at
+            FROM holding_transactions
+            WHERE user_id = :uid
+            ORDER BY COALESCE(executed_at, created_at) DESC, created_at DESC, id DESC
+            LIMIT :lim
+        """), {"uid": user_id, "lim": limit}).mappings().fetchall()
+    return pd.DataFrame([dict(r) for r in rows])
+
+
+def rebuild_holdings_from_transactions(username: str) -> None:
+    user_id = get_user_id_db(username)
+    if user_id is None:
+        return
+
+    with get_db_engine().begin() as conn:
+        rows = conn.execute(text("""
+            SELECT ticker, tx_type, quantity, price, executed_at, created_at, id
+            FROM holding_transactions
+            WHERE user_id = :uid
+            ORDER BY COALESCE(executed_at, created_at) ASC, created_at ASC, id ASC
+        """), {"uid": user_id}).mappings().fetchall()
+
+        positions: dict[str, dict[str, float]] = {}
+        for row in rows:
+            ticker = str(row["ticker"]).upper()
+            tx_type = str(row["tx_type"]).upper()
+            qty = float(row.get("quantity") or 0)
+            price = float(row.get("price") or 0)
+
+            if ticker not in positions:
+                positions[ticker] = {"quantity": 0.0, "avg_price": 0.0}
+
+            pos = positions[ticker]
+
+            if tx_type == "BUY":
+                new_qty = pos["quantity"] + qty
+                if new_qty > 0:
+                    pos["avg_price"] = ((pos["quantity"] * pos["avg_price"]) + (qty * price)) / new_qty
+                    pos["quantity"] = new_qty
+            elif tx_type == "SELL":
+                pos["quantity"] = max(0.0, pos["quantity"] - qty)
+                if pos["quantity"] == 0:
+                    pos["avg_price"] = 0.0
+
+        conn.execute(text("DELETE FROM holdings WHERE user_id = :uid"), {"uid": user_id})
+
+        for ticker, pos in positions.items():
+            if pos["quantity"] <= 0:
+                continue
+            conn.execute(text("""
+                INSERT INTO holdings (user_id, ticker, quantity, avg_price, status, created_at, updated_at)
+                VALUES (:uid, :ticker, :quantity, :avg_price, 'active', now(), now())
+            """), {
+                "uid": user_id,
+                "ticker": ticker,
+                "quantity": pos["quantity"],
+                "avg_price": pos["avg_price"],
+            })
+
+
+def delete_transaction_by_id(username: str, transaction_id: int) -> None:
+    user_id = get_user_id_db(username)
+    if user_id is None:
+        return
+    with get_db_engine().begin() as conn:
+        conn.execute(text("DELETE FROM holding_transactions WHERE user_id = :uid AND id = :txid"), {"uid": user_id, "txid": transaction_id})
+    rebuild_holdings_from_transactions(username)
+
+
+def delete_test_transactions_for_user(username: str) -> int:
+    user_id = get_user_id_db(username)
+    if user_id is None:
+        return 0
+    with get_db_engine().begin() as conn:
+        result = conn.execute(text("""
+            DELETE FROM holding_transactions
+            WHERE user_id = :uid
+              AND (LOWER(COALESCE(memo, '')) LIKE '%test%'
+                   OR memo LIKE '%테스트%'
+                   OR memo LIKE '%시험%')
+        """), {"uid": user_id})
+        deleted = result.rowcount or 0
+    rebuild_holdings_from_transactions(username)
+    return deleted
+
+
+def clear_all_transactions_for_user(username: str) -> int:
+    user_id = get_user_id_db(username)
+    if user_id is None:
+        return 0
+    with get_db_engine().begin() as conn:
+        result = conn.execute(text("DELETE FROM holding_transactions WHERE user_id = :uid"), {"uid": user_id})
+        conn.execute(text("DELETE FROM holdings WHERE user_id = :uid"), {"uid": user_id})
+        deleted = result.rowcount or 0
+    return deleted
+
+
+def apply_split_adjustment(username: str, ticker: str, ratio: float) -> bool:
+    user_id = get_user_id_db(username)
+    if user_id is None or ratio <= 0:
+        return False
+    with get_db_engine().begin() as conn:
+        row = conn.execute(text("SELECT quantity, avg_price FROM holdings WHERE user_id = :uid AND ticker = :ticker"), {"uid": user_id, "ticker": ticker}).fetchone()
+        if not row:
+            return False
+        quantity, avg_price = float(row[0]), float(row[1])
+        conn.execute(text("""
+            UPDATE holdings
+            SET quantity = :q, avg_price = :a, updated_at = now()
+            WHERE user_id = :uid AND ticker = :ticker
+        """), {"q": quantity * ratio, "a": avg_price / ratio if ratio else avg_price, "uid": user_id, "ticker": ticker})
+    return True
+
+
+def upsert_holding_snapshot(username: str, ticker: str, quantity: float, avg_price: float) -> bool:
+    user_id = get_user_id_db(username)
+    if user_id is None:
+        return False
+    ticker = str(ticker).upper()
+    with get_db_engine().begin() as conn:
+        conn.execute(text("DELETE FROM holdings WHERE user_id = :uid AND ticker = :ticker"), {"uid": user_id, "ticker": ticker})
+        if quantity > 0:
+            conn.execute(text("""
+                INSERT INTO holdings (user_id, ticker, quantity, avg_price, status, created_at, updated_at)
+                VALUES (:uid, :ticker, :q, :a, 'active', now(), now())
+            """), {"uid": user_id, "ticker": ticker, "q": quantity, "a": avg_price})
+    return True
 
 def market_summary_rows(
     data_map: Dict[str, pd.DataFrame],
@@ -433,6 +707,37 @@ def calc_profit_signal_score(row: pd.Series) -> tuple[float, str, str]:
 
     return score, label, summary
 
+
+def recommend_action_from_scores(row: pd.Series) -> tuple[str, str]:
+    attractiveness = pd.to_numeric(row.get("절대매력"), errors="coerce")
+    structure_label = str(row.get("구조훼손판정", ""))
+    profit_label = str(row.get("익절판정", ""))
+    add_label = str(row.get("추매판정", ""))
+    final_label = str(row.get("최종판정", ""))
+
+    if pd.isna(attractiveness):
+        attractiveness = 3
+
+    attractiveness = int(attractiveness)
+
+    if attractiveness <= 2 and structure_label in {"구조 훼손", "축소 후보"}:
+        return "손절 우선 검토", "절대매력 낮고 구조 훼손 신호가 강함"
+
+    if attractiveness >= 4 and add_label in {"2차 추매 후보", "1차 추매 후보"} and structure_label in {"유지", "경고"}:
+        return "추매 우선 검토", "절대매력 높고 눌림 구간"
+
+    if attractiveness <= 2 and profit_label in {"일부축소 우선", "분할익절 검토"}:
+        return "익절/축소 우선", "절대매력 낮아 수익 보호 우선"
+
+    if attractiveness >= 4 and profit_label in {"일부축소 우선", "분할익절 검토"}:
+        return "부분익절 후 보유", "좋은 종목이지만 과열 구간"
+
+    if final_label in {"계속보유", "관망"}:
+        return "보유/관망", "명확한 행동 신호 제한적"
+
+    return "관찰 유지", "추가 신호 확인 필요"
+
+
 def style_holdings(df: pd.DataFrame):
     def row_styles(row):
         styles = []
@@ -477,6 +782,31 @@ def style_holdings(df: pd.DataFrame):
                     '축소 후보': '#ea580c',
                     '경고': '#f59e0b',
                     '유지': '#16a34a',
+                }
+                bg = color_map.get(label, '#64748b')
+                style = f'background-color: {bg}; color: white; font-weight: 700'
+            elif col == '절대매력':
+                val = row[col]
+                if pd.notna(val):
+                    if val >= 5:
+                        style = 'background-color: #dcfce7; color: #166534; font-weight: 700'
+                    elif val == 4:
+                        style = 'background-color: #ecfccb; color: #3f6212; font-weight: 700'
+                    elif val == 3:
+                        style = 'background-color: #f8fafc; color: #475569; font-weight: 700'
+                    elif val == 2:
+                        style = 'background-color: #ffedd5; color: #9a3412; font-weight: 700'
+                    else:
+                        style = 'background-color: #fee2e2; color: #991b1b; font-weight: 700'
+            elif col == '행동추천':
+                label = str(row[col])
+                color_map = {
+                    '추매 우선 검토': '#15803d',
+                    '부분익절 후 보유': '#7c3aed',
+                    '익절/축소 우선': '#ea580c',
+                    '손절 우선 검토': '#b91c1c',
+                    '보유/관망': '#475569',
+                    '관찰 유지': '#64748b',
                 }
                 bg = color_map.get(label, '#64748b')
                 style = f'background-color: {bg}; color: white; font-weight: 700'
@@ -543,6 +873,7 @@ def style_holdings(df: pd.DataFrame):
         '구조훼손점수': '{:.2f}',
         '익절점수': '{:.2f}',
         '추매점수': '{:.0f}',
+        '절대매력': '{:.0f}',
     }
     return df.style.apply(row_styles, axis=1).format(fmt, na_rep='-')
 
@@ -699,6 +1030,7 @@ def render_trade_panel(active_user: str):
             trade_price = st.number_input("가격", min_value=0.0, step=0.01, value=0.0, format="%.4f")
 
         trade_memo = st.text_input("메모", placeholder="예: 1차 진입 / 분할매수 / 일부익절")
+        trade_date = st.date_input("거래 날짜", value=date.today(), key="trade_date")
 
         b1, b2 = st.columns(2)
         with b1:
@@ -707,6 +1039,7 @@ def render_trade_panel(active_user: str):
             sell_submitted = st.form_submit_button("매도 기록", width="stretch")
 
     if buy_submitted:
+        trade_dt = datetime.combine(trade_date, datetime.min.time())
         if not trade_ticker:
             st.error("종목 코드를 입력하세요.")
             return
@@ -714,13 +1047,14 @@ def render_trade_panel(active_user: str):
             st.error("가격은 0보다 커야 합니다.")
             return
         try:
-            record_buy(username=active_user, ticker=trade_ticker, quantity=int(trade_qty), price=float(trade_price), memo=trade_memo)
+            record_buy(username=active_user, ticker=trade_ticker, quantity=int(trade_qty), price=float(trade_price), memo=trade_memo,executed_at=trade_dt)
             st.success(f"{trade_ticker} 매수 기록이 저장되었습니다.")
             st.rerun()
         except Exception as e:
             st.error(f"매수 기록 실패: {e}")
 
     if sell_submitted:
+        trade_dt = datetime.combine(trade_date, datetime.min.time())
         if not trade_ticker:
             st.error("종목 코드를 입력하세요.")
             return
@@ -728,7 +1062,7 @@ def render_trade_panel(active_user: str):
             st.error("가격은 0보다 커야 합니다.")
             return
         try:
-            record_sell(username=active_user, ticker=trade_ticker, quantity=int(trade_qty), price=float(trade_price), memo=trade_memo)
+            record_sell(username=active_user, ticker=trade_ticker, quantity=int(trade_qty), price=float(trade_price), memo=trade_memo,executed_at=trade_dt)
             st.success(f"{trade_ticker} 매도 기록이 저장되었습니다.")
             st.rerun()
         except Exception as e:
@@ -738,55 +1072,95 @@ def render_trade_panel(active_user: str):
     st.subheader("최근 거래 기록")
 
     try:
-        tx_rows = list_transactions(active_user, limit=20)
+        tx_rows = list_transactions(active_user, limit=200)
         if tx_rows:
             tx_df = pd.DataFrame(tx_rows)
 
-            # 1) BUY / SELL -> 매수 / 매도
-            if "tx_type" in tx_df.columns:
-                tx_df["tx_type"] = tx_df["tx_type"].replace({
-                    "BUY": "매수",
-                    "SELL": "매도",
+            if "memo" in tx_df.columns:
+                hide_test = st.checkbox("테스트 거래 숨기기", value=True, key="hide_test_trades")
+                if hide_test:
+                    tx_df = tx_df[~tx_df["memo"].apply(is_test_trade_memo)].copy()
+
+            if tx_df.empty:
+                st.caption("표시할 거래 기록이 없습니다.")
+            else:
+                if "tx_type" in tx_df.columns:
+                    tx_df["tx_type"] = tx_df["tx_type"].replace({"BUY": "매수", "SELL": "매도"})
+
+                tx_df["currency"] = tx_df["ticker"].apply(infer_currency_from_ticker)
+                tx_df = tx_df.rename(columns={
+                    "ticker": "종목코드",
+                    "tx_type": "구분",
+                    "quantity": "수량",
+                    "price": "가격",
+                    "fee": "수수료",
+                    "memo": "메모",
+                    "realized_pnl": "실현손익",
+                    "executed_at": "거래시간",
+                    "currency": "통화",
                 })
 
-            # 2) 컬럼명 한글화
-            tx_df = tx_df.rename(columns={
-                "ticker": "종목",
-                "tx_type": "구분",
-                "quantity": "수량",
-                "price": "가격",
-                "fee": "수수료",
-                "memo": "메모",
-                "realized_pnl": "실현손익",
-                "executed_at": "거래시간",
-            })
+                numeric_cols = ["수량", "가격", "수수료", "실현손익"]
+                for col in numeric_cols:
+                    if col in tx_df.columns:
+                        tx_df[col] = pd.to_numeric(tx_df[col], errors="coerce").astype(float)
 
-            # 3) 숫자 컬럼 numeric 정리
-            numeric_cols = ["수량", "가격", "수수료", "실현손익"]
-            for col in numeric_cols:
-                if col in tx_df.columns:
-                    tx_df[col] = pd.to_numeric(tx_df[col], errors="coerce").astype(float)
+                if "거래시간" in tx_df.columns:
+                    tx_df["거래시간"] = pd.to_datetime(tx_df["거래시간"]).dt.strftime("%Y-%m-%d %H:%M")
 
-            # 4) 거래시간 포맷
-            if "거래시간" in tx_df.columns:
-                tx_df["거래시간"] = pd.to_datetime(tx_df["거래시간"]).dt.strftime("%Y-%m-%d %H:%M")
+                krx_df = load_krx_lookup()
+                name_map = build_name_map(krx_df)
+                tx_df["종목명"] = tx_df["종목코드"].map(name_map).fillna("")
+                tx_df["종목"] = tx_df.apply(
+                    lambda r: f"{r['종목명']} ({r['종목코드']})" if str(r.get("종목명", "")).strip() else r["종목코드"],
+                    axis=1,
+                )
 
-            # 5) 표시
-            st.dataframe(
-                tx_df,
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "종목": st.column_config.TextColumn("종목"),
-                    "구분": st.column_config.TextColumn("구분"),
-                    "수량": st.column_config.NumberColumn("수량", format="%,.2f"),
-                    "가격": st.column_config.NumberColumn("가격", format="%,.2f"),
-                    "수수료": st.column_config.NumberColumn("수수료", format="%,.2f"),
-                    "실현손익": st.column_config.NumberColumn("실현손익", format="%,.2f"),
-                    "메모": st.column_config.TextColumn("메모"),
-                    "거래시간": st.column_config.TextColumn("거래시간"),
-                },
-            )
+                tx_df["가격표시"] = tx_df.apply(lambda r: format_money_by_currency(r.get("가격"), r.get("통화", "USD")), axis=1)
+                tx_df["수수료표시"] = tx_df.apply(lambda r: format_money_by_currency(r.get("수수료"), r.get("통화", "USD")), axis=1)
+                tx_df["실현손익표시"] = tx_df.apply(lambda r: format_money_by_currency(r.get("실현손익"), r.get("통화", "USD")), axis=1)
+
+                display_cols = ["종목", "구분", "통화", "수량", "가격표시", "수수료표시", "실현손익표시", "메모", "거래시간"]
+                display_df = tx_df[[c for c in display_cols if c in tx_df.columns]].copy()
+                display_df = display_df.rename(columns={"가격표시": "가격", "수수료표시": "수수료", "실현손익표시": "실현손익"})
+
+                st.dataframe(
+                    display_df,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "종목": st.column_config.TextColumn("종목"),
+                        "구분": st.column_config.TextColumn("구분"),
+                        "통화": st.column_config.TextColumn("통화"),
+                        "수량": st.column_config.NumberColumn("수량", format="%,.2f"),
+                        "가격": st.column_config.TextColumn("가격"),
+                        "수수료": st.column_config.TextColumn("수수료"),
+                        "실현손익": st.column_config.TextColumn("실현손익"),
+                        "메모": st.column_config.TextColumn("메모"),
+                        "거래시간": st.column_config.TextColumn("거래시간"),
+                    },
+                )
+
+                st.markdown("### 거래기록 관리")
+                admin_tx_df = fetch_transactions_admin(active_user, limit=300)
+                if not admin_tx_df.empty:
+                    if hide_test if "hide_test" in locals() else False:
+                        admin_tx_df = admin_tx_df[~admin_tx_df["memo"].apply(is_test_trade_memo)].copy()
+                    admin_tx_df["currency"] = admin_tx_df["ticker"].apply(infer_currency_from_ticker)
+                    admin_tx_df["executed_display"] = pd.to_datetime(admin_tx_df["executed_at"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
+                    admin_tx_df["name"] = admin_tx_df["ticker"].map(name_map).fillna("")
+                    admin_tx_df["display"] = admin_tx_df.apply(
+                        lambda r: f"#{int(r['id'])} | {(r['name'] + ' (' + r['ticker'] + ')') if str(r['name']).strip() else r['ticker']} | {r['tx_type']} | {float(r['quantity']):,.2f}주 | {format_money_by_currency(r['price'], r['currency'])} | {r['executed_display']}",
+                        axis=1,
+                    )
+                    selected_tx_display = st.selectbox("삭제할 거래 선택", options=admin_tx_df["display"].tolist(), key="delete_tx_select")
+                    selected_tx_id = int(admin_tx_df.loc[admin_tx_df["display"] == selected_tx_display, "id"].iloc[0])
+                    if st.button("선택 거래 삭제", type="secondary"):
+                        delete_transaction_by_id(active_user, selected_tx_id)
+                        st.success("선택한 거래를 삭제했습니다.")
+                        st.rerun()
+                else:
+                    st.caption("삭제할 거래가 없습니다.")
         else:
             st.caption("거래 기록이 없습니다.")
     except Exception as e:
@@ -800,25 +1174,26 @@ def main() -> None:
     if not active_user:
         return
 
-    if st.session_state.get('active_user') != active_user or 'ticker_text' not in st.session_state:
-        st.session_state['active_user'] = active_user
-        if active_user == 'guest' or st.session_state.get('is_guest'):
-            items = st.session_state.get('guest_watchlist', list(DEFAULT_TICKERS))
-        else:
-            items = load_watchlist(active_user)
-            if not items:
-                items = list(DEFAULT_TICKERS)
-        st.session_state['ticker_text'] = ', '.join(items)
+    raw_items = load_watchlist(active_user)
+    if not raw_items:
+        raw_items = list(DEFAULT_TICKERS)
+
+    items = _normalize_watchlist_items(raw_items)
+    st.session_state["watchlist_items"] = items
+
+    if st.session_state.get("watchlist_editor_needs_sync") or "ticker_text_input" not in st.session_state:
+        st.session_state["ticker_text_input"] = ", ".join([item["ticker"] for item in items])
+        st.session_state["watchlist_editor_needs_sync"] = False
 
     with st.sidebar:
         st.header('설정')
         if st.button('로그아웃', width='stretch'):
-            st.session_state.pop('authenticated_user', None)
-            st.session_state.pop('authenticated_role', None)
-            st.session_state.pop('ticker_text', None)
-            st.session_state.pop('is_guest', None)
-            st.session_state.pop('guest_watchlist', None)
-            st.session_state.pop('active_user', None)
+            for key in [
+                'authenticated_user', 'authenticated_role', 'is_guest', 'guest_watchlist',
+                'active_user', 'watchlist_items', 'ticker_text_input', 'watchlist_notice',
+                'watchlist_editor_needs_sync'
+            ]:
+                st.session_state.pop(key, None)
             st.rerun()
 
         st.caption(f'현재 사용자: {active_user}')
@@ -826,23 +1201,38 @@ def main() -> None:
         st.caption(f'권한: {role}')
         if active_user == 'guest':
             st.warning('Guest 모드입니다. 저장은 현재 세션에서만 유지됩니다.')
-        current_watchlist_text = st.text_area('관심 종목 (쉼표로 구분)', key='ticker_text', help='미국: SOXL, QQQ / 한국: 종목명 검색으로 추가하거나 005930.KS 형식으로 직접 입력', height=120)
-        c1,c2=st.columns(2)
+
+        current_watchlist_text = st.text_area(
+            '관심 종목 (쉼표로 구분)',
+            key='ticker_text_input',
+            help='미국: SOXL, QQQ / 한국: 종목명 검색으로 추가하거나 005930.KS 형식으로 직접 입력',
+            height=120
+        )
+
+        attractiveness_score = st.selectbox(
+            "절대 매력 점수(신규 기본값)",
+            options=[1, 2, 3, 4, 5],
+            index=2,
+            help="새로 추가하는 관심종목의 기본 점수입니다."
+        )
+
+        c1, c2 = st.columns(2)
         with c1:
             if st.button('관심종목 저장', width='stretch'):
-                persist_current_watchlist(active_user, current_watchlist_text)
+                persist_current_watchlist(active_user, current_watchlist_text, default_score=attractiveness_score)
                 st.rerun()
         with c2:
             if st.button('초기화', width='stretch'):
                 reset_current_watchlist(active_user)
                 st.rerun()
+
         if st.session_state.get('watchlist_notice'):
             st.success(st.session_state['watchlist_notice'])
             del st.session_state['watchlist_notice']
 
         st.markdown('### 국장 종목 검색')
-        krx_df=load_krx_lookup()
-        search_name=st.text_input('종목명/코드 검색', placeholder='예: 삼성, 하이닉스, 005930')
+        krx_df = load_krx_lookup()
+        search_name = st.text_input('종목명/코드 검색', placeholder='예: 삼성, 하이닉스, 005930')
         with st.expander('최신 KRX 목록 갱신(선택)', expanded=False):
             st.caption('기본값은 전체 KRX CSV입니다. 실패해도 기존 CSV를 계속 사용합니다.')
             if st.button('KRX 목록 업데이트', width='stretch'):
@@ -859,28 +1249,43 @@ def main() -> None:
             st.caption('검색 결과 없음')
         else:
             matched_df = matched_df.copy()
-            matched_df['표시'] = matched_df.apply(lambda row: f"{row['name']} | {row['ticker_yf']} | {row['market']}", axis=1)
+            matched_df['표시'] = matched_df.apply(
+                lambda row: f"{row['name']} | {row['ticker_yf']} | {row['market']}",
+                axis=1
+            )
             selected_option = st.selectbox('검색 결과', options=matched_df['표시'].tolist())
             selected_row = matched_df.loc[matched_df['표시'] == selected_option].iloc[0]
             st.caption(f"선택: {selected_row['name']} ({selected_row['ticker_yf']})")
             st.button('관심 종목에 추가', width='stretch', on_click=append_ticker_from_search, args=(selected_row['ticker_yf'],))
 
-        period=st.selectbox('조회 기간', PERIOD_OPTIONS, index=PERIOD_OPTIONS.index(DEFAULT_PERIOD))
-        interval=st.selectbox('간격', INTERVAL_OPTIONS, index=INTERVAL_OPTIONS.index(DEFAULT_INTERVAL))
+        period = st.selectbox('조회 기간', PERIOD_OPTIONS, index=PERIOD_OPTIONS.index(DEFAULT_PERIOD))
+        interval = st.selectbox('간격', INTERVAL_OPTIONS, index=INTERVAL_OPTIONS.index(DEFAULT_INTERVAL))
         if st.button('새로고침', type='primary', width='stretch'):
             load_market_data.clear()
 
     holdings_df = load_holdings(active_user)
+    if not holdings_df.empty:
+        if "quantity" in holdings_df.columns:
+            holdings_df = holdings_df[holdings_df["quantity"] > 0].copy()
+        elif "qty" in holdings_df.columns:
+            holdings_df = holdings_df[holdings_df["qty"] > 0].copy()
+
     holdings_tickers = holdings_df['ticker'].tolist() if not holdings_df.empty else []
-    watchlist = [ticker.strip().upper() for ticker in st.session_state['ticker_text'].split(',') if ticker.strip()]
+
+    items = _normalize_watchlist_items(st.session_state.get("watchlist_items", []))
+    st.session_state["watchlist_items"] = items
+    watchlist = [item["ticker"] for item in items]
+    scores = {item["ticker"]: item["attractiveness_score"] for item in items}
+
     combined = []
     for t in watchlist + holdings_tickers:
         if t not in combined:
             combined.append(t)
+
     tickers = tuple(combined)
     if not tickers:
         st.warning('최소 1개 이상의 티커를 입력해야 합니다.')
-        return
+        st.stop()
 
     with st.spinner('시장 데이터를 불러오는 중...'):
         data_map, errors, _, price_map = load_market_data(
@@ -889,34 +1294,89 @@ def main() -> None:
             interval=interval
         )
 
-
     if errors:
         with st.expander('불러오지 못한 종목', expanded=False):
             for ticker, error in errors.items():
                 st.write(f'- {ticker}: {error}')
+
     if not data_map:
         st.error('불러온 데이터가 없습니다. 티커 형식을 다시 확인하세요.')
-        return
+        st.stop()
 
     krx_df = load_krx_lookup()
     display_names = normalize_display_names(tuple(data_map.keys()), krx_df)
     summary_df = market_summary_rows(data_map, display_names, holdings_df, price_map)
-    signal_df = build_signal_table(data_map, display_names)
+    if not summary_df.empty:
+        summary_df["절대매력"] = summary_df["Ticker"].map(scores).fillna(3).astype(int)
 
-    if not holdings_df.empty:
-        if "quantity" in holdings_df.columns:
-            holdings_df = holdings_df[holdings_df["quantity"] > 0].copy()
-        elif "qty" in holdings_df.columns:
-            holdings_df = holdings_df[holdings_df["qty"] > 0].copy()
+    signal_df = build_signal_table(data_map, display_names)
     holdings_view_df = holdings_view(holdings_df, data_map, display_names, price_map)
+
+    if not holdings_view_df.empty:
+        holdings_view_df["절대매력"] = holdings_view_df["Ticker"].map(scores).fillna(3).astype(int)
+        _action_df = holdings_view_df.apply(
+            lambda row: recommend_action_from_scores(row),
+            axis=1,
+            result_type="expand"
+        )
+        _action_df.columns = ["행동추천", "행동요약"]
+        holdings_view_df = pd.concat([holdings_view_df, _action_df], axis=1)
 
     render_top_metrics(summary_df, len(data_map), len(holdings_df))
 
+    st.markdown("### 실현손익 요약")
+    try:
+        tx_rows = list_transactions(active_user, limit=1000)
+        tx_df = pd.DataFrame(tx_rows)
+        pnl_adj = load_pnl_adjustments(active_user)
+        if not tx_df.empty:
+            tx_df["realized_pnl"] = pd.to_numeric(tx_df["realized_pnl"], errors="coerce").fillna(0)
+            tx_df["tx_type"] = tx_df["tx_type"].astype(str)
+            tx_df["currency"] = tx_df["ticker"].apply(infer_currency_from_ticker)
+            tx_df = tx_df[~tx_df["memo"].apply(is_test_trade_memo) if "memo" in tx_df.columns else [True] * len(tx_df)]
+            sell_df = tx_df[tx_df["tx_type"] == "SELL"]
+
+            krw_sell = sell_df[sell_df["currency"] == "KRW"]
+            usd_sell = sell_df[sell_df["currency"] == "USD"]
+
+            total_realized_krw = krw_sell["realized_pnl"].sum() + pnl_adj.get("KRW", 0.0)
+            total_realized_usd = usd_sell["realized_pnl"].sum() + pnl_adj.get("USD", 0.0)
+            trade_count = len(sell_df)
+            win_count = len(sell_df[sell_df["realized_pnl"] > 0])
+            win_rate = (win_count / trade_count * 100) if trade_count > 0 else 0
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("누적 실현손익(KRW)", format_money_by_currency(total_realized_krw, "KRW"))
+            c2.metric("누적 실현손익(USD)", format_money_by_currency(total_realized_usd, "USD"))
+            c3.metric("매도 횟수", trade_count)
+            c4.metric("승률(%)", f"{win_rate:.1f}")
+        else:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("누적 실현손익(KRW)", format_money_by_currency(pnl_adj.get("KRW", 0.0), "KRW"))
+            c2.metric("누적 실현손익(USD)", format_money_by_currency(pnl_adj.get("USD", 0.0), "USD"))
+            c3.metric("매도 횟수", 0)
+            c4.metric("승률(%)", "0.0")
+
+        with st.expander("누적 실현손익 보정", expanded=False):
+            adj_c1, adj_c2 = st.columns(2)
+            with adj_c1:
+                pnl_adj_krw = st.number_input("KRW 보정값", value=float(pnl_adj.get("KRW", 0.0)), step=1000.0)
+            with adj_c2:
+                pnl_adj_usd = st.number_input("USD 보정값", value=float(pnl_adj.get("USD", 0.0)), step=1.0)
+            if st.button("실현손익 보정 저장"):
+                save_pnl_adjustments(active_user, pnl_adj_krw, pnl_adj_usd)
+                st.success("실현손익 보정값을 저장했습니다.")
+                st.rerun()
+    except Exception as e:
+        st.error(f"실현손익 계산 오류: {e}")
+
     tab1, tab2 = st.tabs(['관심 종목', '보유 종목'])
+
     with tab1:
         st.subheader('종합 상태판')
         st.caption('핵심 컬럼 중심으로 색을 강화해 빠르게 읽을 수 있게 조정했다.')
         st.dataframe(style_summary(summary_df), width='stretch', hide_index=True)
+
         st.subheader('신호등형 요약표')
         st.caption('보유 여부와 평균단가 대비 괴리를 함께 보도록 확장했다.')
         st.dataframe(style_signal_table(signal_df), width='stretch', hide_index=True)
@@ -927,6 +1387,7 @@ def main() -> None:
         selected_ticker = select_options[selected_display]
         selected_name = display_names.get(selected_ticker, selected_ticker)
         render_profile_card(selected_ticker, selected_name)
+
         c1, c2 = st.columns([1.3, 1])
         with c1:
             chart_df = build_chart_frame(data_map[selected_ticker]).reset_index().melt(
@@ -934,29 +1395,24 @@ def main() -> None:
                 var_name='구분',
                 value_name='가격'
             )
-
             chart_df["구분"] = pd.Categorical(
                 chart_df["구분"],
                 categories=["Close", "MA20", "MA60", "MA120", "MA200"],
                 ordered=True
             )
-
             chart = alt.Chart(chart_df).mark_line().encode(
                 x='Date:T',
                 y='가격:Q',
-                color=alt.Color(
-                    '구분:N',
-                    sort=["Close", "MA20", "MA60", "MA120", "MA200"]
-                ),
+                color=alt.Color('구분:N', sort=["Close", "MA20", "MA60", "MA120", "MA200"]),
                 tooltip=['Date:T', '구분:N', alt.Tooltip('가격:Q', format=',.2f')]
             ).properties(height=360)
-
             st.altair_chart(chart, width='stretch')
 
         with c2:
             score_df = build_score_table(data_map[selected_ticker], selected_ticker)
             st.markdown('#### 항목별 점수 기여도')
             st.altair_chart(build_contribution_chart(score_df), width='stretch')
+
         st.markdown('#### 정량 점수표')
         st.dataframe(score_df, width='stretch', hide_index=True)
 
@@ -968,7 +1424,98 @@ def main() -> None:
             st.caption('보유 종목은 data/holdings/<사용자>.csv 에서 로드된다. 평균단가 대비 괴리, 구조 훼손 경고, 익절 신호를 함께 본다.')
             st.dataframe(style_holdings(holdings_view_df), width='stretch', hide_index=True)
             st.caption('익절판정: 계속보유 / 과열 주의 / 분할익절 검토 / 일부축소 우선')
-    
+
+            st.markdown("### 보유종목 절대 매력 점수 수정")
+            edited_scores = {}
+            cols = st.columns(3)
+            name_map = build_name_map(krx_df)
+
+            editable_items = []
+            seen = set()
+            for item in items:
+                ticker = item["ticker"]
+                score = item["attractiveness_score"]
+                editable_items.append({"ticker": ticker, "attractiveness_score": score})
+                seen.add(ticker)
+
+            for ticker in holdings_tickers:
+                if ticker not in seen:
+                    editable_items.append({"ticker": ticker, "attractiveness_score": scores.get(ticker, 3)})
+                    seen.add(ticker)
+
+            for i, item in enumerate(editable_items):
+                ticker = item["ticker"]
+                current_score = int(item.get("attractiveness_score", 3))
+                display_name = name_map.get(ticker, "")
+                display = f"{display_name} ({ticker})" if display_name else ticker
+                with cols[i % 3]:
+                    st.markdown(f"<div style='font-size:0.85rem; margin-bottom:4px'>{display}</div>", unsafe_allow_html=True)
+                    edited_scores[ticker] = st.selectbox(
+                        f"절대매력_{ticker}",
+                        [1, 2, 3, 4, 5],
+                        index=[1, 2, 3, 4, 5].index(current_score),
+                        key=f"score_{ticker}",
+                        label_visibility="collapsed"
+                    )
+
+            if st.button("보유종목 절대 매력 점수 저장"):
+                existing_items = _normalize_watchlist_items(st.session_state.get("watchlist_items", []))
+                existing_tickers = {item["ticker"] for item in existing_items}
+                updated_items = []
+
+                for item in existing_items:
+                    ticker = item["ticker"]
+                    updated_items.append({
+                        "ticker": ticker,
+                        "attractiveness_score": edited_scores.get(ticker, item.get("attractiveness_score", 3)),
+                    })
+
+                for ticker in edited_scores:
+                    if ticker not in existing_tickers:
+                        updated_items.append({
+                            "ticker": ticker,
+                            "attractiveness_score": edited_scores[ticker],
+                        })
+
+                save_watchlist(active_user, updated_items)
+                st.session_state["watchlist_items"] = updated_items
+                st.session_state["watchlist_editor_needs_sync"] = True
+                st.success("절대 매력 점수 저장 완료")
+                st.rerun()
+
+            st.markdown("### 보유종목 조정 도구")
+            tool_c1, tool_c2 = st.columns(2)
+
+            with tool_c1:
+                st.markdown("#### 수량/평단 수동 조정")
+                if holdings_tickers:
+                    selected_holding = st.selectbox("조정할 종목", options=holdings_tickers, key="manual_adjust_ticker")
+                    selected_row = holdings_df[holdings_df["ticker"] == selected_holding].iloc[0]
+                    qty_default = float(selected_row.get("quantity", selected_row.get("qty", 0)) or 0)
+                    avg_default = float(selected_row.get("avg_price", 0) or 0)
+                    manual_qty = st.number_input("수량", min_value=0.0, value=qty_default, step=1.0, key="manual_adjust_qty")
+                    manual_avg = st.number_input("평균단가", min_value=0.0, value=avg_default, step=0.01, key="manual_adjust_avg")
+                    if st.button("보유종목 값 저장"):
+                        upsert_holding_snapshot(active_user, selected_holding, manual_qty, manual_avg)
+                        st.success("보유종목 수량/평단 반영 완료")
+                        st.rerun()
+                else:
+                    st.caption("보유종목이 없으면 조정할 수 없습니다.")
+
+            with tool_c2:
+                st.markdown("#### 액면분할/병합 반영")
+                if holdings_tickers:
+                    split_ticker = st.selectbox("분할 반영 종목", options=holdings_tickers, key="split_ticker")
+                    split_ratio = st.number_input("분할 비율", min_value=0.01, value=1.0, step=0.01, help="예: 5대1 분할이면 5 입력", key="split_ratio")
+                    if st.button("분할 비율 반영"):
+                        ok = apply_split_adjustment(active_user, split_ticker, float(split_ratio))
+                        if ok:
+                            st.success("액면분할/병합 반영 완료")
+                            st.rerun()
+                        else:
+                            st.error("반영 실패: 보유종목 또는 비율을 확인하세요.")
+                else:
+                    st.caption("보유종목이 없으면 조정할 수 없습니다.")
             if not holdings_view_df.empty:
                 st.markdown('#### 추매 후보 보기')
                 candidate_df = holdings_view_df[holdings_view_df['추매점수'] >= 2].copy()
