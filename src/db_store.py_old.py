@@ -1,108 +1,151 @@
-from __future__ import annotations
-
 import os
-from functools import lru_cache
-from typing import List, Optional
+from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.exc import SQLAlchemyError
 
-load_dotenv()
+load_dotenv(dotenv_path=Path(".env"))
 
 
-@lru_cache(maxsize=1)
-def get_engine() -> Engine:
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        raise ValueError("DATABASE_URL not set")
-    return create_engine(db_url, future=True)
+class DBStore:
+    def __init__(self):
+        db_url = os.getenv("DATABASE_URL")
+        if not db_url:
+            raise ValueError("DATABASE_URL not set")
+        self.engine = create_engine(db_url)
 
+    def _get_user_id(self, username: str):
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT id FROM users WHERE username = :u"),
+                {"u": username},
+            ).fetchone()
+            if not row:
+                return None
+            return row[0]
 
-@lru_cache(maxsize=128)
-def get_user_id(username: str) -> Optional[int]:
-    engine = get_engine()
-    query = text("SELECT id FROM users WHERE username = :username LIMIT 1")
-    with engine.connect() as conn:
-        row = conn.execute(query, {"username": username}).mappings().first()
-        return int(row["id"]) if row else None
-
-
-def load_watchlist_from_db(username: str) -> Optional[List[str]]:
-    """
-    Returns:
-        - None: user does not exist in DB yet (caller may fallback to local file)
-        - [] or list[str]: user exists, DB is source of truth
-    """
-    user_id = get_user_id(username)
-    if user_id is None:
-        return None
-
-    engine = get_engine()
-    query = text(
-        """
-        SELECT ticker
-        FROM watchlists
-        WHERE user_id = :user_id
-        ORDER BY ticker ASC
-        """
-    )
-    with engine.connect() as conn:
-        rows = conn.execute(query, {"user_id": user_id}).mappings().all()
-        return [str(row["ticker"]).upper() for row in rows]
-
-
-
-def load_holdings_from_db(username: str) -> Optional[pd.DataFrame]:
-    """
-    Returns:
-        - None: user does not exist in DB yet (caller may fallback to local file)
-        - DataFrame: DB result is source of truth
-    """
-    user_id = get_user_id(username)
-    if user_id is None:
-        return None
-
-    engine = get_engine()
-    query = text(
-        """
-        SELECT
-            ticker,
-            COALESCE(ticker, '') AS name,
-            COALESCE(avg_price, 0) AS avg_price,
-            COALESCE(quantity, 0) AS qty,
-            COALESCE(profile_name, '') AS profile_name,
-            COALESCE(status, 'active') AS status
-        FROM holdings
-        WHERE user_id = :user_id
-        ORDER BY ticker ASC
-        """
-    )
-    with engine.connect() as conn:
-        rows = conn.execute(query, {"user_id": user_id}).mappings().all()
-
-    if not rows:
-        return pd.DataFrame(columns=["ticker", "name", "avg_price", "qty", "profile_name", "status"])
-
-    df = pd.DataFrame(rows)
-    df["ticker"] = df["ticker"].astype(str).str.upper()
-    df["name"] = df["name"].replace("", pd.NA).fillna(df["ticker"])
-    df["avg_price"] = pd.to_numeric(df["avg_price"], errors="coerce").fillna(0.0)
-    df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0.0)
-    return df
-
-
-
-def test_db_read(username: str = "master") -> str:
-    try:
-        engine = get_engine()
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        user_id = get_user_id(username)
+    def load_watchlist(self, username: str):
+        user_id = self._get_user_id(username)
         if user_id is None:
-            return f"DB 연결 성공 / users 테이블에 '{username}' 없음"
-        return f"DB 연결 성공 / user_id={user_id}"
-    except (ValueError, SQLAlchemyError) as exc:
-        return f"DB 연결 실패: {exc}"
+            return []
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT ticker
+                    FROM watchlists
+                    WHERE user_id = :uid
+                    ORDER BY id
+                """),
+                {"uid": user_id},
+            ).fetchall()
+
+        return [r[0] for r in rows]
+
+    def load_holdings(self, username: str):
+        user_id = self._get_user_id(username)
+        if user_id is None:
+            return pd.DataFrame(columns=["ticker", "quantity", "avg_price", "status"])
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT ticker, quantity, avg_price, status
+                    FROM holdings
+                    WHERE user_id = :uid
+                    ORDER BY id
+                """),
+                {"uid": user_id},
+            ).mappings().all()
+
+        return pd.DataFrame(rows)
+
+def save_watchlist(self, username: str, items):
+    user_id = self._get_user_id(username)
+    if user_id is None:
+        raise ValueError(f"user not found: {username}")
+
+    clean_items = []
+    seen = set()
+
+    for item in items:
+        if isinstance(item, dict):
+            ticker = str(item.get("ticker", "")).strip().upper()
+            score = item.get("attractiveness_score", 3)
+        else:
+            ticker = str(item).strip().upper()
+            score = 3
+
+        try:
+            score = int(score)
+        except Exception:
+            score = 3
+
+        score = max(1, min(5, score))
+
+        if ticker and ticker not in seen:
+            clean_items.append({
+                "ticker": ticker,
+                "attractiveness_score": score,
+            })
+            seen.add(ticker)
+
+    with self.engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM watchlists WHERE user_id = :uid"),
+            {"uid": user_id},
+        )
+
+        for item in clean_items:
+            conn.execute(
+                text("""
+                    INSERT INTO watchlists (user_id, ticker, attractiveness_score, created_at)
+                    VALUES (:uid, :ticker, :score, now())
+                """),
+                {
+                    "uid": user_id,
+                    "ticker": item["ticker"],
+                    "score": item["attractiveness_score"],
+                },
+            )
+
+    return clean_items
+
+    def save_holdings(self, username: str, df: pd.DataFrame):
+        user_id = self._get_user_id(username)
+        if user_id is None:
+            raise ValueError(f"user not found: {username}")
+
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM holdings WHERE user_id = :uid"),
+                {"uid": user_id},
+            )
+
+            if df is None or df.empty:
+                return
+
+            for _, row in df.iterrows():
+                ticker = str(row.get("ticker", "")).strip().upper()
+                if not ticker:
+                    continue
+
+                quantity = float(row.get("quantity", 0) or 0)
+                avg_price = float(row.get("avg_price", 0) or 0)
+                status = str(row.get("status", "active") or "active")
+
+                conn.execute(
+                    text("""
+                        INSERT INTO holdings
+                        (user_id, ticker, quantity, avg_price, status, created_at, updated_at)
+                        VALUES (:uid, :ticker, :quantity, :avg_price, :status, now(), now())
+                    """),
+                    {
+                        "uid": user_id,
+                        "ticker": ticker,
+                        "quantity": quantity,
+                        "avg_price": avg_price,
+                        "status": status,
+                    },
+                )

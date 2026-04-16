@@ -1,11 +1,101 @@
 {
   "user_id": "master",
-  "tickers": [
-    "000660.KS",
-    "005930.KS",
-    "MSFT",
-    "NVDA",
-    "SCHD",
-    "SOXL"
+  "items": [
+    {
+      "ticker": "SOXL",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "QQQ",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "SCHD",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "MSFT",
+      "attractiveness_score": 5
+    },
+    {
+      "ticker": "NVDA",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "005930.KS",
+      "attractiveness_score": 4
+    },
+    {
+      "ticker": "000660.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "TQQQ",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "GOOGL",
+      "attractiveness_score": 5
+    },
+    {
+      "ticker": "INTC",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "462870.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "086790.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "010120.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "105560.KS",
+      "attractiveness_score": 4
+    },
+    {
+      "ticker": "000815.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "000810.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "004800.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "005387.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "005385.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "035420.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "207940.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "028260.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "009540.KS",
+      "attractiveness_score": 3
+    },
+    {
+      "ticker": "030200.KS",
+      "attractiveness_score": 3
+    }
   ]
 }

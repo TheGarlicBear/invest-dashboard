@@ -41,10 +41,10 @@ def list_transactions(username, ticker=None, limit=50):
         if ticker:
             rows = conn.execute(
                 text("""
-                    SELECT ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at
+                    SELECT ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at
                     FROM holding_transactions
                     WHERE user_id = :uid AND ticker = :t
-                    ORDER BY executed_at DESC
+                    ORDER BY created_at DESC
                     LIMIT :lim
                 """),
                 {"uid": user_id, "t": ticker, "lim": limit}
@@ -52,10 +52,10 @@ def list_transactions(username, ticker=None, limit=50):
         else:
             rows = conn.execute(
                 text("""
-                    SELECT ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at
+                    SELECT ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at
                     FROM holding_transactions
                     WHERE user_id = :uid
-                    ORDER BY executed_at DESC
+                    ORDER BY created_at DESC
                     LIMIT :lim
                 """),
                 {"uid": user_id, "lim": limit}
@@ -64,7 +64,7 @@ def list_transactions(username, ticker=None, limit=50):
         return [dict(r) for r in rows]
 
 
-def record_buy(username, ticker, quantity, price, fee=0, memo='', profile_name=None):
+def record_buy(username, ticker, quantity, price, fee=0, memo='', executed_at=None, profile_name=None):
     now = datetime.utcnow()
 
     quantity = Decimal(str(quantity))
@@ -120,12 +120,12 @@ def record_buy(username, ticker, quantity, price, fee=0, memo='', profile_name=N
                 "p": price,
                 "f": fee,
                 "m": memo,
-                "e": now
+                "e": executed_at or now
             }
         )
 
 
-def record_sell(username, ticker, quantity, price, fee=0, memo=''):
+def record_sell(username, ticker, quantity, price, fee=0, memo='', executed_at=None):
     now = datetime.utcnow()
 
     quantity = Decimal(str(quantity))
@@ -190,6 +190,6 @@ def record_sell(username, ticker, quantity, price, fee=0, memo=''):
                 "f": fee,
                 "m": memo,
                 "rp": realized_pnl,
-                "e": now
+                "e": executed_at or now
             }
         )

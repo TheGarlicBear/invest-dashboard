@@ -33,15 +33,21 @@ class DBStore:
         with self.engine.begin() as conn:
             rows = conn.execute(
                 text("""
-                    SELECT ticker
+                    SELECT ticker, attractiveness_score
                     FROM watchlists
                     WHERE user_id = :uid
                     ORDER BY id
                 """),
                 {"uid": user_id},
-            ).fetchall()
+            ).mappings().all()
 
-        return [r[0] for r in rows]
+        return [
+            {
+                "ticker": str(r["ticker"]).strip().upper(),
+                "attractiveness_score": int(r.get("attractiveness_score", 3) or 3),
+            }
+            for r in rows
+        ]
 
     def load_holdings(self, username: str):
         user_id = self._get_user_id(username)
@@ -67,10 +73,29 @@ class DBStore:
             raise ValueError(f"user not found: {username}")
 
         clean_items = []
+        seen = set()
+
         for item in items:
-            t = str(item).strip().upper()
-            if t and t not in clean_items:
-                clean_items.append(t)
+            if isinstance(item, dict):
+                ticker = str(item.get("ticker", "")).strip().upper()
+                score = item.get("attractiveness_score", 3)
+            else:
+                ticker = str(item).strip().upper()
+                score = 3
+
+            try:
+                score = int(score)
+            except Exception:
+                score = 3
+
+            score = max(1, min(5, score))
+
+            if ticker and ticker not in seen:
+                clean_items.append({
+                    "ticker": ticker,
+                    "attractiveness_score": score,
+                })
+                seen.add(ticker)
 
         with self.engine.begin() as conn:
             conn.execute(
@@ -78,13 +103,17 @@ class DBStore:
                 {"uid": user_id},
             )
 
-            for ticker in clean_items:
+            for item in clean_items:
                 conn.execute(
                     text("""
-                        INSERT INTO watchlists (user_id, ticker, created_at)
-                        VALUES (:uid, :ticker, now())
+                        INSERT INTO watchlists (user_id, ticker, attractiveness_score, created_at)
+                        VALUES (:uid, :ticker, :score, now())
                     """),
-                    {"uid": user_id, "ticker": ticker},
+                    {
+                        "uid": user_id,
+                        "ticker": item["ticker"],
+                        "score": item["attractiveness_score"],
+                    },
                 )
 
         return clean_items
