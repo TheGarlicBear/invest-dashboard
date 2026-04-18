@@ -53,6 +53,10 @@ def render_review_tab(active_user: str):
 
     tx_rows = list_transactions(active_user, limit=500)
     df = pd.DataFrame(tx_rows)
+    exclude_tags = ["테스트", "test", "초기세팅", "수동조정", "분할병합", "보유종목 기록", "보유 종목 기록"]
+
+    if "memo" in df.columns:
+        df = df[~df["memo"].astype(str).str.lower().str.contains("|".join(exclude_tags))]
 
     if df.empty:
         st.info("거래 기록이 없습니다.")

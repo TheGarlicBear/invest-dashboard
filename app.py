@@ -29,6 +29,7 @@ from src.indicators import add_indicators
 from src.krx_lookup import build_name_map, load_krx_tickers, search_krx_tickers, update_krx_tickers_from_pykrx
 from src.holding_signal import decide_final_action
 from src.transactions_service import record_buy, record_sell, list_transactions
+from src.cash_review_ui import render_cash_section, render_review_tab
 from src.store_layer import (
     load_watchlist,
     load_holdings,
@@ -1382,7 +1383,7 @@ def main() -> None:
     except Exception as e:
         st.error(f"실현손익 계산 오류: {e}")
 
-    tab1, tab2 = st.tabs(['관심 종목', '보유 종목'])
+    tab1, tab2, tab3 = st.tabs(['관심 종목', '보유 종목', '매매복기'])
 
     with tab1:
         st.subheader('종합 상태판')
@@ -1429,6 +1430,7 @@ def main() -> None:
         st.dataframe(score_df, width='stretch', hide_index=True)
 
     with tab2:
+        render_cash_section(active_user)
         st.subheader('보유 종목 현황')
         if holdings_df.empty:
             st.info('현재 사용자 보유 종목 파일이 없습니다.')
@@ -1537,6 +1539,9 @@ def main() -> None:
                     st.dataframe(candidate_df, width='stretch', hide_index=True)
 
         render_trade_panel(active_user)
+
+    with tab3:
+        render_review_tab(active_user)    
 
 if __name__ == '__main__':
     main()
