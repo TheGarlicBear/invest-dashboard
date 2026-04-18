@@ -8,6 +8,18 @@ from sqlalchemy import create_engine, text
 load_dotenv(dotenv_path=Path(".env"))
 
 
+def _clean_ticker(value):
+    if value is None:
+        return ""
+    return (
+        str(value)
+        .replace("\ufeff", "")
+        .replace("\u200b", "")
+        .replace("\xa0", "")
+        .strip()
+        .upper()
+    )
+
 class DBStore:
     def __init__(self):
         db_url = os.getenv("DATABASE_URL")
@@ -24,6 +36,18 @@ class DBStore:
             if not row:
                 return None
             return row[0]
+    
+    def _clean_ticker(value):
+        if value is None:
+            return ""
+        return (
+            str(value)
+            .replace("\ufeff", "")
+            .replace("\u200b", "")
+            .replace("\xa0", "")
+            .strip()
+            .upper()
+        )
 
     def load_watchlist(self, username: str):
         user_id = self._get_user_id(username)
@@ -43,10 +67,11 @@ class DBStore:
 
         return [
             {
-                "ticker": str(r["ticker"]).strip().upper(),
+                "ticker": _clean_ticker(r["ticker"]),
                 "attractiveness_score": int(r.get("attractiveness_score", 3) or 3),
             }
             for r in rows
+            if _clean_ticker(r["ticker"])
         ]
 
     def load_holdings(self, username: str):
