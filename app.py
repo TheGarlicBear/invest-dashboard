@@ -120,10 +120,10 @@ def _normalize_watchlist_items(raw_items, default_score: int = 3) -> list[dict]:
 
     for item in raw_items:
         if isinstance(item, dict):
-            ticker = str(item.get("ticker", "")).strip().upper()
+            ticker = _clean_ticker(item.get("ticker", ""))
             score = item.get("attractiveness_score", default_score)
         else:
-            ticker = str(item).strip().upper()
+            ticker = _clean_ticker(item)
             score = default_score
 
         if not ticker or ticker in seen:
@@ -158,12 +158,24 @@ def append_ticker_from_search(ticker_to_add: str) -> None:
     st.session_state["watchlist_items"] = current_items
     st.session_state["watchlist_editor_needs_sync"] = True
 
+def _clean_ticker(value):
+    if value is None:
+        return ""
+    return (
+        str(value)
+        .replace("\ufeff", "")
+        .replace("\u200b", "")
+        .replace("\xa0", "")
+        .strip()
+        .upper()
+    )
+
 
 def _parse_ticker_text(current_text: str | None) -> list[str]:
     current_text = current_text or ""
     clean = []
     for raw in current_text.split(","):
-        t = raw.strip().upper()
+        t = _clean_ticker(raw)
         if t and t not in clean:
             clean.append(t)
     return clean
