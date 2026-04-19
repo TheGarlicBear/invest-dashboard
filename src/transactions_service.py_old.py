@@ -20,76 +20,72 @@ def get_user_id(conn, username):
     return row[0]
 
 
-def _infer_currency(ticker: str) -> str:
-    t = str(ticker or "").upper()
+def infer_currency_from_ticker(ticker: str) -> str:
+    t = str(ticker or "").upper().strip()
     if t.endswith(".KS") or t.endswith(".KQ") or (t.isdigit() and len(t) == 6):
         return "KRW"
     return "USD"
 
 
-def _get_review_store():
-    try:
-        from src.trading_review_store import TradingReviewStore
-        return TradingReviewStore()
-    except Exception:
-        return None
+def infer_tx_tag(tx_type: str, memo: str = "") -> str:
+    m = str(memo or "").strip().lower()
+    if "테스트" in m or "test" in m:
+        return "테스트"
+    if "초기" in m:
+        return "초기세팅"
+    if "수동" in m:
+        return "수동조정"
+    if tx_type.upper() == "BUY":
+        if "추매" in m:
+            return "추매"
+        return "신규매수"
+    if tx_type.upper() == "SELL":
+        if "손절" in m:
+            return "손절"
+        if "전량" in m:
+            return "전량매도"
+        if "일부" in m or "분할" in m:
+            return "부분익절"
+        return "매도"
+    return "기타"
 
 
-def _after_trade_saved(
-    *,
-    username: str,
-    ticker: str,
-    tx_type: str,
-    price: Decimal,
-    quantity: Decimal,
-    fee: Decimal,
-    realized_pnl: Decimal,
-    tx_id: int | None,
-    executed_at,
-    memo: str = "",
-):
-    currency = _infer_currency(ticker)
-    store = _get_review_store()
-    if store is None:
-        return
+def _ensure_cash_row(conn, user_id: int, currency: str):
+    conn.execute(
+        text("""
+            INSERT INTO cash_balances (user_id, currency, balance, updated_at)
+            VALUES (:uid, :currency, 0, now())
+            ON CONFLICT (user_id, currency)
+            DO NOTHING
+        """),
+        {"uid": user_id, "currency": currency},
+    )
 
-    # 예수금 반영
-    try:
-        gross = float(price * quantity)
-        fee_f = float(fee)
-        if str(tx_type).upper() == "BUY":
-            delta = -(gross + fee_f)
-        else:
-            delta = gross - fee_f
 
-        store.adjust_cash(
-            username=username,
-            currency=currency,
-            delta=delta,
-            memo=memo or f"{str(tx_type).lower()}:{ticker}",
-            ref_tx_id=tx_id,
-        )
-    except Exception:
-        pass
-
-    # 복기 스냅샷 저장(스토어가 지원하는 경우만)
-    try:
-        if hasattr(store, "save_trade_snapshot"):
-            store.save_trade_snapshot(username, {
-                "tx_id": tx_id,
-                "ticker": str(ticker).upper(),
-                "tx_type": str(tx_type).upper(),
-                "currency": currency,
-                "entry_price": float(price),
-                "quantity": float(quantity),
-                "realized_pnl": float(realized_pnl),
-                "tx_tag": None,
-                "review_excluded": False,
-                "executed_at": executed_at.isoformat() if hasattr(executed_at, "isoformat") else None,
-                "memo": memo,
-            })
-    except Exception:
-        pass
+def _adjust_cash(conn, user_id: int, currency: str, delta: Decimal, entry_type: str, memo: str = "", ref_tx_id=None):
+    _ensure_cash_row(conn, user_id, currency)
+    conn.execute(
+        text("""
+            UPDATE cash_balances
+            SET balance = balance + :delta, updated_at = now()
+            WHERE user_id = :uid AND currency = :currency
+        """),
+        {"uid": user_id, "currency": currency, "delta": delta},
+    )
+    conn.execute(
+        text("""
+            INSERT INTO cash_ledger (user_id, currency, entry_type, amount, memo, ref_tx_id, created_at)
+            VALUES (:uid, :currency, :entry_type, :amount, :memo, :ref_tx_id, now())
+        """),
+        {
+            "uid": user_id,
+            "currency": currency,
+            "entry_type": entry_type,
+            "amount": delta,
+            "memo": memo,
+            "ref_tx_id": ref_tx_id,
+        },
+    )
 
 
 def get_holding(username, ticker):
@@ -113,18 +109,21 @@ def list_transactions(username, ticker=None, limit=50):
         if ticker:
             rows = conn.execute(
                 text("""
-                    SELECT id, ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at
+                    SELECT id, ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at,
+                           COALESCE(currency, :currency) AS currency,
+                           COALESCE(tx_tag, '') AS tx_tag
                     FROM holding_transactions
                     WHERE user_id = :uid AND ticker = :t
                     ORDER BY created_at DESC
                     LIMIT :lim
                 """),
-                {"uid": user_id, "t": ticker, "lim": limit}
+                {"uid": user_id, "t": ticker, "lim": limit, "currency": infer_currency_from_ticker(ticker)}
             ).mappings().fetchall()
         else:
             rows = conn.execute(
                 text("""
-                    SELECT id, ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at
+                    SELECT id, ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at,
+                           currency, COALESCE(tx_tag, '') AS tx_tag
                     FROM holding_transactions
                     WHERE user_id = :uid
                     ORDER BY created_at DESC
@@ -133,20 +132,18 @@ def list_transactions(username, ticker=None, limit=50):
                 {"uid": user_id, "lim": limit}
             ).mappings().fetchall()
 
-        items = []
-        for r in rows:
-            item = dict(r)
-            item["currency"] = _infer_currency(item.get("ticker", ""))
-            items.append(item)
-        return items
+        return [dict(r) for r in rows]
 
 
 def record_buy(username, ticker, quantity, price, fee=0, memo='', executed_at=None, profile_name=None):
     now = datetime.utcnow()
 
+    ticker = str(ticker).upper().strip()
     quantity = Decimal(str(quantity))
     price = Decimal(str(price))
     fee = Decimal(str(fee))
+    currency = infer_currency_from_ticker(ticker)
+    tx_tag = infer_tx_tag("BUY", memo)
 
     with engine.begin() as conn:
         user_id = get_user_id(conn, username)
@@ -187,8 +184,8 @@ def record_buy(username, ticker, quantity, price, fee=0, memo='', executed_at=No
         tx_id = conn.execute(
             text("""
                 INSERT INTO holding_transactions
-                (user_id, ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at)
-                VALUES (:uid, :t, 'BUY', :q, :p, :f, :m, 0, :e, now())
+                (user_id, ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at, currency, tx_tag)
+                VALUES (:uid, :t, 'BUY', :q, :p, :f, :m, 0, :e, now(), :currency, :tx_tag)
                 RETURNING id
             """),
             {
@@ -198,30 +195,32 @@ def record_buy(username, ticker, quantity, price, fee=0, memo='', executed_at=No
                 "p": price,
                 "f": fee,
                 "m": memo,
-                "e": executed_at or now
+                "e": executed_at or now,
+                "currency": currency,
+                "tx_tag": tx_tag,
             }
         ).scalar_one()
 
-    _after_trade_saved(
-        username=username,
-        ticker=ticker,
-        tx_type="BUY",
-        price=price,
-        quantity=quantity,
-        fee=fee,
-        realized_pnl=Decimal("0"),
-        tx_id=tx_id,
-        executed_at=executed_at or now,
-        memo=memo,
-    )
+        _adjust_cash(
+            conn,
+            user_id=user_id,
+            currency=currency,
+            delta=-(quantity * price + fee),
+            entry_type="trade_buy",
+            memo=f"BUY:{ticker}",
+            ref_tx_id=tx_id,
+        )
 
 
 def record_sell(username, ticker, quantity, price, fee=0, memo='', executed_at=None):
     now = datetime.utcnow()
 
+    ticker = str(ticker).upper().strip()
     quantity = Decimal(str(quantity))
     price = Decimal(str(price))
     fee = Decimal(str(fee))
+    currency = infer_currency_from_ticker(ticker)
+    tx_tag = infer_tx_tag("SELL", memo)
 
     with engine.begin() as conn:
         user_id = get_user_id(conn, username)
@@ -270,8 +269,8 @@ def record_sell(username, ticker, quantity, price, fee=0, memo='', executed_at=N
         tx_id = conn.execute(
             text("""
                 INSERT INTO holding_transactions
-                (user_id, ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at)
-                VALUES (:uid, :t, 'SELL', :q, :p, :f, :m, :rp, :e, now())
+                (user_id, ticker, tx_type, quantity, price, fee, memo, realized_pnl, executed_at, created_at, currency, tx_tag)
+                VALUES (:uid, :t, 'SELL', :q, :p, :f, :m, :rp, :e, now(), :currency, :tx_tag)
                 RETURNING id
             """),
             {
@@ -282,19 +281,18 @@ def record_sell(username, ticker, quantity, price, fee=0, memo='', executed_at=N
                 "f": fee,
                 "m": memo,
                 "rp": realized_pnl,
-                "e": executed_at or now
+                "e": executed_at or now,
+                "currency": currency,
+                "tx_tag": tx_tag,
             }
         ).scalar_one()
 
-    _after_trade_saved(
-        username=username,
-        ticker=ticker,
-        tx_type="SELL",
-        price=price,
-        quantity=quantity,
-        fee=fee,
-        realized_pnl=realized_pnl,
-        tx_id=tx_id,
-        executed_at=executed_at or now,
-        memo=memo,
-    )
+        _adjust_cash(
+            conn,
+            user_id=user_id,
+            currency=currency,
+            delta=(quantity * price - fee),
+            entry_type="trade_sell",
+            memo=f"SELL:{ticker}",
+            ref_tx_id=tx_id,
+        )

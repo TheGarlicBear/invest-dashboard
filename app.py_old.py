@@ -1180,7 +1180,7 @@ def render_trade_panel(active_user: str):
         st.error(f"거래 기록 조회 실패: {e}")
 
 def main() -> None:
-    st.title('Alpha Decision Engine')
+    st.title('개인 투자 판단 보조기')
     st.caption('관심 종목과 보유 종목을 분리하고, 사용자별 관심 목록과 평균단가 기반 추매 판단을 함께 보는 대시보드')
 
     active_user = render_login_gate()
@@ -1269,7 +1269,7 @@ def main() -> None:
             selected_option = st.selectbox('검색 결과', options=matched_df['표시'].tolist())
             selected_row = matched_df.loc[matched_df['표시'] == selected_option].iloc[0]
             st.caption(f"선택: {selected_row['name']} ({selected_row['ticker_yf']})")
-            st.caption("👉 원하는 종목 코드를 복사해서 위 관심종목 입력창에 붙여넣으세요")
+            st.button('관심 종목에 추가', width='stretch', on_click=append_ticker_from_search, args=(selected_row['ticker_yf'],))
 
         period = st.selectbox('조회 기간', PERIOD_OPTIONS, index=PERIOD_OPTIONS.index(DEFAULT_PERIOD))
         interval = st.selectbox('간격', INTERVAL_OPTIONS, index=INTERVAL_OPTIONS.index(DEFAULT_INTERVAL))
@@ -1440,6 +1440,8 @@ def main() -> None:
             st.caption('익절판정: 계속보유 / 과열 주의 / 분할익절 검토 / 일부축소 우선')
 
             st.markdown("### 보유종목 절대 매력 점수 수정")
+            edited_scores = {}
+            cols = st.columns(3)
             name_map = build_name_map(krx_df)
 
             editable_items = []
@@ -1455,52 +1457,45 @@ def main() -> None:
                     editable_items.append({"ticker": ticker, "attractiveness_score": scores.get(ticker, 3)})
                     seen.add(ticker)
 
-            option_map = {}
-            for item in editable_items:
+            for i, item in enumerate(editable_items):
                 ticker = item["ticker"]
+                current_score = int(item.get("attractiveness_score", 3))
                 display_name = name_map.get(ticker, "")
-                label = f"{display_name} ({ticker})" if display_name else ticker
-                option_map[label] = ticker
+                display = f"{display_name} ({ticker})" if display_name else ticker
+                with cols[i % 3]:
+                    st.markdown(f"<div style='font-size:0.85rem; margin-bottom:4px'>{display}</div>", unsafe_allow_html=True)
+                    edited_scores[ticker] = st.selectbox(
+                        f"절대매력_{ticker}",
+                        [1, 2, 3, 4, 5],
+                        index=[1, 2, 3, 4, 5].index(current_score),
+                        key=f"score_{ticker}",
+                        label_visibility="collapsed"
+                    )
 
-            if option_map:
-                ui_c1, ui_c2, ui_c3 = st.columns([2.4, 1, 1.2])
-                with ui_c1:
-                    selected_label = st.selectbox("종목 선택", options=list(option_map.keys()), key="single_score_ticker")
-                selected_ticker = option_map[selected_label]
-                current_score = next(
-                    (int(item.get("attractiveness_score", 3)) for item in editable_items if item["ticker"] == selected_ticker),
-                    3,
-                )
-                with ui_c2:
-                    new_score = st.selectbox("점수", [1, 2, 3, 4, 5], index=[1, 2, 3, 4, 5].index(current_score), key="single_score_value")
-                with ui_c3:
-                    st.write("")
-                    st.write(f"현재 점수: {current_score}")
-                    if st.button("절대 매력 점수 저장", key="save_single_score", width="stretch"):
-                        existing_items = _normalize_watchlist_items(st.session_state.get("watchlist_items", []))
-                        existing_tickers = {item["ticker"] for item in existing_items}
-                        updated_items = []
+            if st.button("보유종목 절대 매력 점수 저장"):
+                existing_items = _normalize_watchlist_items(st.session_state.get("watchlist_items", []))
+                existing_tickers = {item["ticker"] for item in existing_items}
+                updated_items = []
 
-                        for item in existing_items:
-                            ticker = item["ticker"]
-                            updated_items.append({
-                                "ticker": ticker,
-                                "attractiveness_score": new_score if ticker == selected_ticker else item.get("attractiveness_score", 3),
-                            })
+                for item in existing_items:
+                    ticker = item["ticker"]
+                    updated_items.append({
+                        "ticker": ticker,
+                        "attractiveness_score": edited_scores.get(ticker, item.get("attractiveness_score", 3)),
+                    })
 
-                        if selected_ticker not in existing_tickers:
-                            updated_items.append({
-                                "ticker": selected_ticker,
-                                "attractiveness_score": new_score,
-                            })
+                for ticker in edited_scores:
+                    if ticker not in existing_tickers:
+                        updated_items.append({
+                            "ticker": ticker,
+                            "attractiveness_score": edited_scores[ticker],
+                        })
 
-                        save_watchlist(active_user, updated_items)
-                        st.session_state["watchlist_items"] = updated_items
-                        st.session_state["watchlist_editor_needs_sync"] = True
-                        st.success(f"{selected_label} 점수를 {new_score}로 저장했습니다.")
-                        st.rerun()
-            else:
-                st.caption("점수를 수정할 종목이 없습니다.")
+                save_watchlist(active_user, updated_items)
+                st.session_state["watchlist_items"] = updated_items
+                st.session_state["watchlist_editor_needs_sync"] = True
+                st.success("절대 매력 점수 저장 완료")
+                st.rerun()
 
             st.markdown("### 보유종목 조정 도구")
             tool_c1, tool_c2 = st.columns(2)
